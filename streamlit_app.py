@@ -1,5 +1,5 @@
 import streamlit as st
-from sentence_transformers import SentenceTransformer, util
+import SentenceTransformer
 import pandas as pd
 import fitz  # PyMuPDF for PDF parsing
 import docx
