@@ -8,7 +8,7 @@ import os
 # Load model
 @st.cache_resource
 def load_model():
-    return SentenceTransformer('output/tsdae_model')  # Change to your path
+    return SentenceTransformer('https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/tsdae_jobbert_job_recommendation.py')  # Change to your path
 
 # Extract text from uploaded file
 def extract_text(uploaded_file):
