@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
-import requests
-from io import StringIO
-from sklearn.feature_extraction.text import TfidfVectorizer
+import PyPDF2
+from sentence_transformers import SentenceTransformer
+import torch
 from sklearn.metrics.pairwise import cosine_similarity
 
 # --- Helper functions ---
@@ -19,27 +19,33 @@ def load_jobs_data():
     return df
 
 def extract_text_from_uploaded_file(uploaded_file):
-    # Simple text extraction for .txt files or .pdf if needed
     if uploaded_file is not None:
         if uploaded_file.type == "text/plain":
             return str(uploaded_file.read(), "utf-8")
         elif uploaded_file.type == "application/pdf":
-            import PyPDF2
             pdf_reader = PyPDF2.PdfReader(uploaded_file)
             text = ""
             for page in pdf_reader.pages:
-                text += page.extract_text()
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text
             return text
         else:
             return "Unsupported file format. Please upload a .txt or .pdf file."
     return None
+
+@st.cache_resource(show_spinner=True)
+def load_tsdae_model():
+    model_path = "./tsdae_model"  # <-- Your saved TSDAE model folder here
+    model = SentenceTransformer(model_path)
+    return model
 
 # --- Streamlit app ---
 st.set_page_config(page_title="CV Job Matcher Dashboard", layout="wide")
 
 st.title("🚀 CV Job Matcher Dashboard")
 st.markdown("""
-Upload your CV, explore job listings, and find best matches based on text similarity.
+Upload your CV, explore job listings, and find best matches based on semantic similarity using your pre-trained TSDAE model.
 """)
 
 # Sidebar for file upload
@@ -47,7 +53,7 @@ st.sidebar.header("Upload your CV")
 uploaded_file = st.sidebar.file_uploader("Upload CV (TXT or PDF)", type=["txt", "pdf"])
 
 cv_text = extract_text_from_uploaded_file(uploaded_file)
-if cv_text:
+if cv_text and "Unsupported file format" not in cv_text:
     st.subheader("Your Uploaded CV Text")
     st.text_area("CV Content", cv_text, height=300)
 
@@ -58,7 +64,6 @@ jobs_data = load_jobs_data()
 st.sidebar.markdown("---")
 st.sidebar.header("Job Listings")
 
-# Show some job title filters or search
 job_titles = jobs_data['job_title'].unique()
 selected_jobs = st.sidebar.multiselect("Filter jobs by title", options=job_titles, default=job_titles[:5])
 
@@ -67,31 +72,32 @@ filtered_jobs = jobs_data[jobs_data['job_title'].isin(selected_jobs)]
 st.subheader(f"Job Listings ({len(filtered_jobs)})")
 st.dataframe(filtered_jobs[['job_id', 'job_title']].reset_index(drop=True))
 
-# If CV text uploaded, calculate similarity and show top matches
-if cv_text:
+if cv_text and "Unsupported file format" not in cv_text:
     st.subheader("Top Job Matches Based on Your CV")
 
-    # Vectorize CV text + jobs combined_text for similarity
-    vectorizer = TfidfVectorizer(stop_words='english')
-    combined_corpus = [cv_text] + filtered_jobs['combined_text'].tolist()
-    tfidf_matrix = vectorizer.fit_transform(combined_corpus)
+    model = load_tsdae_model()
 
-    # Cosine similarity of CV against jobs (first row vs rest)
-    cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+    # Encode CV and job combined_text using TSDAE model
+    cv_embedding = model.encode(cv_text, convert_to_tensor=True)
+    job_texts = filtered_jobs['combined_text'].tolist()
+    job_embeddings = model.encode(job_texts, convert_to_tensor=True)
 
-    # Attach similarity score and sort descending
+    # Compute cosine similarity (using torch)
+    cosine_scores = torch.nn.functional.cosine_similarity(cv_embedding.unsqueeze(0), job_embeddings)
+
+    # Add similarity scores to DataFrame and sort
     filtered_jobs = filtered_jobs.copy()
-    filtered_jobs['similarity'] = cosine_sim
+    filtered_jobs['similarity'] = cosine_scores.cpu().numpy()
     top_matches = filtered_jobs.sort_values(by='similarity', ascending=False).head(10)
 
     for idx, row in top_matches.iterrows():
-        st.markdown(f"### {row['job_title']} (Similarity: {row['similarity']:.2f})")
+        st.markdown(f"### {row['job_title']} (Similarity: {row['similarity']:.3f})")
         st.write(row['combined_text'][:300] + "...")
         st.markdown("---")
 else:
-    st.info("Upload your CV on the left sidebar to see job matches.")
+    st.info("Upload your CV (txt or pdf) on the left sidebar to see job matches.")
 
-# Optional: Show user applicant job data
+# Optional: Show user applicant job data sample
 st.subheader("User Applicant Job Data Sample")
 st.dataframe(user_data.head(10))
 
