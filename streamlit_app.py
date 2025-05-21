@@ -16,10 +16,5 @@ with st.expander ("Profil Pengguna Dataset (Kaggle)"):
   df_user = pd.read_csv("https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/user_applicant_jobs.csv")
   df_user
 
-uploaded_file = st.file_uploader('Choose your .pdf file', type="pdf")
-if uploaded_file is not None:
-    df = extract_data(uploaded_file)
-
-
 
 
