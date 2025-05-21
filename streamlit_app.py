@@ -1,49 +1,102 @@
 import streamlit as st
-import SentenceTransformer
 import pandas as pd
-import fitz  # PyMuPDF for PDF parsing
-import docx
-import os
+import requests
+from io import StringIO
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Load model
-@st.cache_resource
-def load_model():
-    return SentenceTransformer('https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/tsdae_jobbert_job_recommendation.py')  # Change to your path
+# --- Helper functions ---
+@st.cache_data
+def load_user_data():
+    url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/user_applicant_jobs.csv"
+    df = pd.read_csv(url)
+    return df
 
-# Extract text from uploaded file
-def extract_text(uploaded_file):
-    if uploaded_file.name.endswith('.pdf'):
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        return " ".join([page.get_text() for page in doc])
-    elif uploaded_file.name.endswith('.docx'):
-        return "\n".join([p.text for p in docx.Document(uploaded_file).paragraphs])
-    else:
-        return uploaded_file.read().decode('utf-8')
+@st.cache_data
+def load_jobs_data():
+    url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/tech_jobs.csv"
+    df = pd.read_csv(url)
+    return df
 
-# Compute recommendations
-def get_recommendations(resume_text, model, jobs_df, job_embeddings, top_k=20):
-    resume_embedding = model.encode(resume_text, convert_to_tensor=True)
-    similarities = util.cos_sim(resume_embedding, job_embeddings)[0]
-    top_results = torch.topk(similarities, k=top_k)
-    recommended_jobs = jobs_df.iloc[top_results.indices.cpu()]
-    recommended_jobs['Score'] = top_results.values.cpu().numpy()
-    return recommended_jobs
+def extract_text_from_uploaded_file(uploaded_file):
+    # Simple text extraction for .txt files or .pdf if needed
+    if uploaded_file is not None:
+        if uploaded_file.type == "text/plain":
+            return str(uploaded_file.read(), "utf-8")
+        elif uploaded_file.type == "application/pdf":
+            import PyPDF2
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            text = ""
+            for page in pdf_reader.pages:
+                text += page.extract_text()
+            return text
+        else:
+            return "Unsupported file format. Please upload a .txt or .pdf file."
+    return None
 
-# UI
-st.title("Job Recommendation System (TSDAE)")
-st.markdown("Upload your **CV/Resume** to get personalized job matches!")
+# --- Streamlit app ---
+st.set_page_config(page_title="CV Job Matcher Dashboard", layout="wide")
 
-uploaded_file = st.file_uploader("Upload Resume (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
+st.title("🚀 CV Job Matcher Dashboard")
+st.markdown("""
+Upload your CV, explore job listings, and find best matches based on text similarity.
+""")
 
-if uploaded_file:
-    resume_text = extract_text(uploaded_file)
-    st.text_area("Resume Text", resume_text, height=200)
+# Sidebar for file upload
+st.sidebar.header("Upload your CV")
+uploaded_file = st.sidebar.file_uploader("Upload CV (TXT or PDF)", type=["txt", "pdf"])
 
-    model = load_model()
-    jobs_df = pd.read_csv("data/jobs.csv")  # Adjust path
-    job_embeddings = torch.load("data/job_embeddings.pt")  # Adjust path
+cv_text = extract_text_from_uploaded_file(uploaded_file)
+if cv_text:
+    st.subheader("Your Uploaded CV Text")
+    st.text_area("CV Content", cv_text, height=300)
 
-    with st.spinner("Generating recommendations..."):
-        recommendations = get_recommendations(resume_text, model, jobs_df, job_embeddings)
-        st.success("Top 20 Job Recommendations")
-        st.dataframe(recommendations[['title', 'company', 'location', 'Score']])
+# Load datasets
+user_data = load_user_data()
+jobs_data = load_jobs_data()
+
+st.sidebar.markdown("---")
+st.sidebar.header("Job Listings")
+
+# Show some job title filters or search
+job_titles = jobs_data['job_title'].unique()
+selected_jobs = st.sidebar.multiselect("Filter jobs by title", options=job_titles, default=job_titles[:5])
+
+filtered_jobs = jobs_data[jobs_data['job_title'].isin(selected_jobs)]
+
+st.subheader(f"Job Listings ({len(filtered_jobs)})")
+st.dataframe(filtered_jobs[['job_id', 'job_title']].reset_index(drop=True))
+
+# If CV text uploaded, calculate similarity and show top matches
+if cv_text:
+    st.subheader("Top Job Matches Based on Your CV")
+
+    # Vectorize CV text + jobs combined_text for similarity
+    vectorizer = TfidfVectorizer(stop_words='english')
+    combined_corpus = [cv_text] + filtered_jobs['combined_text'].tolist()
+    tfidf_matrix = vectorizer.fit_transform(combined_corpus)
+
+    # Cosine similarity of CV against jobs (first row vs rest)
+    cosine_sim = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+
+    # Attach similarity score and sort descending
+    filtered_jobs = filtered_jobs.copy()
+    filtered_jobs['similarity'] = cosine_sim
+    top_matches = filtered_jobs.sort_values(by='similarity', ascending=False).head(10)
+
+    for idx, row in top_matches.iterrows():
+        st.markdown(f"### {row['job_title']} (Similarity: {row['similarity']:.2f})")
+        st.write(row['combined_text'][:300] + "...")
+        st.markdown("---")
+else:
+    st.info("Upload your CV on the left sidebar to see job matches.")
+
+# Optional: Show user applicant job data
+st.subheader("User Applicant Job Data Sample")
+st.dataframe(user_data.head(10))
+
+# Footer
+st.markdown("""
+---
+*Dashboard created with Streamlit*  
+""")
