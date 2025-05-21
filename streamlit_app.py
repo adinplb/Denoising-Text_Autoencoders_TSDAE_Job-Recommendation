@@ -10,9 +10,4 @@ with st.expander ('Dataset Postingan Lowonngan Pekerjaan'):
   df_jobs = pd.read_csv("https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/tech_jobs.csv")
   df_jobs
 
-'''
-with st.expander ('Dataset Profil Pengguna (Kaggle)'):
-  st.write('**Fitur sudah diseleksi dan digabungkan (Merging)**')
-  df_user = pd.read_csv("https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/user_applicant_jobs.csv")
-  df_user
-'''
+
