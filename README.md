@@ -6,7 +6,7 @@ Kata Kunci: Sistem Rekomendasi Kerja, Job2Vec, TSDAE, K-Means Clustering, K-Near
 
 ## Demo App
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dp-machinelearning-ai.streamlit.app/)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dp-machinelearning-ai.streamlit.app/) 
 
 ## GitHub Codespaces
 
