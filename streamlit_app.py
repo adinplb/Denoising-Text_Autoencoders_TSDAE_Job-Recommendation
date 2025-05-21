@@ -14,7 +14,7 @@ def load_user_data():
 
 @st.cache_data
 def load_jobs_data():
-    url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/tech_jobs.csv"
+    url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/combined_jobs_2000.csv"
     df = pd.read_csv(url)
     return df
 
