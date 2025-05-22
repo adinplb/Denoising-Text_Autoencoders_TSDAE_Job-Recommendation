@@ -236,7 +236,8 @@ elif section == "CV Analysis":
 
                 st.markdown("----")
 
-st.markdown("""
+st.markdown(
+"""
 ---
 *This dashboard demonstrates a job recommendation system using CV uploads, the [TechWolf JobBERT-v2](https://huggingface.co/TechWolf/JobBERT-v2) pretrained model from Hugging Face to create embeddings of job posting texts, clustering job postings, and basic CV analyses.*
 
