@@ -9,14 +9,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 @st.cache_data
 def load_user_data():
     url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/user_applicant_jobs.csv"
-    df = pd.read_csv(url)
-    return df
+    df_user = pd.read_csv(url)
+    return df_jobs
 
 @st.cache_data
 def load_jobs_data():
     url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/combined_jobs_2000.csv"
-    df = pd.read_csv(url)
-    return df
+    df_jobs = pd.read_csv(url)
+    return df_jobs
 
 def extract_text_from_uploaded_file(uploaded_file):
     if uploaded_file is not None:
@@ -47,6 +47,14 @@ st.title("🚀 CV Job Matcher Dashboard")
 st.markdown("""
 Upload your CV, explore job listings, and find best matches based on semantic similarity using your pre-trained TSDAE model.
 """)
+
+with st.expander ("Postingan Lowongan Pekerjaan"):
+    st.write ("**Sudah di seleksi fitur dan merging**")
+    df_jobs
+
+with st.expander ("Profile User"):
+    st.write ("**Sudah di seleksi fitur dan merging**")
+    df_user
 
 # Sidebar for file upload
 st.sidebar.header("Upload your CV")
