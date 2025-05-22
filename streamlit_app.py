@@ -62,7 +62,7 @@ def analyze_cv_text(text, job_keywords_set):
     ])
 
     text_lower = text.lower()
-    words = re.findall(r"\\b[a-z]{2,}\\b", text_lower)
+    words = re.findall(r"\b[a-z]{2,}\b", text_lower)
     words_filtered = [w for w in words if w not in stopwords]
     word_count = len(words_filtered)
     word_freq = Counter(words_filtered)
@@ -200,10 +200,10 @@ elif section == "CV Analysis":
         else:
             all_job_keywords = set()
             for txt in df_jobs["text"].fillna(""):
-                kws = set(re.findall(r"\\b[a-z]{2,}\\b", txt.lower()))
+                kws = set(re.findall(r"\b[a-z]{2,}\b", txt.lower()))
                 all_job_keywords.update(kws)
             for title in df_jobs["Title"].fillna(""):
-                kws = set(re.findall(r"\\b[a-z]{2,}\\b", title.lower()))
+                kws = set(re.findall(r"\b[a-z]{2,}\b", title.lower()))
                 all_job_keywords.update(kws)
 
             for i, uploaded_file in enumerate(uploaded_files):
