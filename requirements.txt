@@ -4,3 +4,4 @@ PyPDF2
 streamlit
 pandas
 scikit-learn
+matplotlib
