@@ -6,12 +6,11 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
-from transformers import AutoTokenizer, AutoModel
-import torch
+import gensim.downloader as api
 
 st.set_page_config(page_title="Job Recommendation Dashboard", layout="wide")
 
-st.title("🚀 Job Recommendation Dashboard with TechWolf JobBERT-v2 Embeddings")
+st.title("🚀 Job Recommendation Dashboard with FastText Embeddings")
 
 # Sidebar Navigation
 st.sidebar.title("Navigation")
@@ -33,10 +32,9 @@ else:
 def load_job_dataset():
     url = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
     df = pd.read_csv(url)
-    # ensure expected columns
     expected_cols = {"Job.ID", "text", "Title"}
     if not expected_cols.issubset(set(df.columns)):
-        st.error("Dataset does not contain required columns: Job.ID, text, Title")
+        st.error("Dataset missing required columns: Job.ID, text, Title")
         return pd.DataFrame()
     return df
 
@@ -47,8 +45,6 @@ def extract_text_from_txt(file) -> str:
         return ""
 
 def extract_text_from_pdf(file) -> str:
-    # For demonstration, we will not do real pdf parsing as it requires external libs
-    # Instead, show placeholder text
     return "[PDF content parsing not implemented in this demo]"
 
 def analyze_cv_text(text, job_keywords_set):
@@ -83,41 +79,28 @@ def analyze_cv_text(text, job_keywords_set):
     }
 
 @st.cache_resource(show_spinner=True)
-def load_jobbert_model():
-    model_name = "TechWolf/JobBERT-v2"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
-    model.eval()
-    return tokenizer, model
+def load_fasttext_model():
+    # This will download the model on first run (~1GB), then cache it.
+    ft_model = api.load("fasttext-wiki-news-subwords-300")
+    return ft_model
 
-def embed_texts(texts, tokenizer, model, device='cpu', batch_size=16):
+def embed_texts_fasttext(texts, ft_model, embedding_dim=300):
     embeddings = []
-    for i in range(0, len(texts), batch_size):
-        batch_texts = texts[i:i+batch_size]
-        encoded_input = tokenizer(batch_texts, padding=True, truncation=True, max_length=512, return_tensors="pt")
-        encoded_input = {k: v.to(device) for k,v in encoded_input.items()}
-        with torch.no_grad():
-            model_output = model(**encoded_input)
-            # Use pooled output (corresponds to CLS token representation)
-            if hasattr(model_output, "pooler_output") and model_output.pooler_output is not None:
-                pooled = model_output.pooler_output
-            else:
-                # fallback to mean pooling if pooler_output is not available
-                token_embeddings = model_output.last_hidden_state
-                attention_mask = encoded_input['attention_mask'].unsqueeze(-1).expand(token_embeddings.size()).float()
-                masked_embeddings = token_embeddings * attention_mask
-                summed = torch.sum(masked_embeddings, dim=1)
-                counts = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
-                pooled = summed / counts
-            pooled = pooled.cpu().numpy()
-            embeddings.extend(pooled)
+    for text in texts:
+        words = re.findall(r"\b[a-z]{2,}\b", text.lower())
+        valid_vectors = []
+        for w in words:
+            if w in ft_model:
+                valid_vectors.append(ft_model[w])
+        if valid_vectors:
+            mean_vector = np.mean(valid_vectors, axis=0)
+        else:
+            mean_vector = np.zeros(embedding_dim, dtype=float)
+        embeddings.append(mean_vector)
     return np.vstack(embeddings)
 
-# Load Dataset once
+# Load dataset once
 df_jobs = load_job_dataset()
-
-# Device selection
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 if section == "Upload CVs":
     st.header("1️⃣ Upload Your CVs (Max 5)")
@@ -136,18 +119,16 @@ elif section == "Job Posting Dataset":
     st.dataframe(df_jobs[['Job.ID', 'Title', 'text']])
 
 elif section == "Embeddings":
-    st.header("3️⃣ Create Embeddings of Job Posting Dataset Using TechWolf JobBERT-v2")
+    st.header("3️⃣ Create Embeddings of Job Posting Dataset Using FastText")
 
     if df_jobs.empty:
         st.error("Job posting dataset failed to load.")
     else:
-        with st.spinner("Loading JobBERT-v2 model..."):
-            tokenizer, model = load_jobbert_model()
-            model.to(device)
-
+        with st.spinner("Loading FastText model..."):
+            ft_model = load_fasttext_model()
         texts = df_jobs["text"].fillna("").tolist()
-        with st.spinner("Computing embeddings for job postings..."):
-            job_embeddings = embed_texts(texts, tokenizer, model, device=device, batch_size=32)
+        with st.spinner("Computing FastText embeddings for job postings..."):
+            job_embeddings = embed_texts_fasttext(texts, ft_model)
 
         st.write("Embeddings created for", len(texts), "job postings.")
         st.write("Embedding vector shape:", job_embeddings.shape)
@@ -155,7 +136,7 @@ elif section == "Embeddings":
         st.session_state['job_embeddings'] = job_embeddings
 
 elif section == "Clustering":
-    st.header("4️⃣ Clustering Job Postings Using TechWolf JobBERT-v2 Embeddings")
+    st.header("4️⃣ Clustering Job Postings Using FastText Embeddings")
 
     if "job_embeddings" not in st.session_state:
         st.warning("Please generate embeddings first in the 'Embeddings' section.")
@@ -174,10 +155,10 @@ elif section == "Clustering":
         # PCA visualization
         pca = PCA(n_components=2, random_state=42)
         coords = pca.fit_transform(job_embeddings)
-        df_jobs["x"] = coords[:,0]
-        df_jobs["y"] = coords[:,1]
+        df_jobs["x"] = coords[:, 0]
+        df_jobs["y"] = coords[:, 1]
 
-        fig, ax = plt.subplots(figsize=(8,6))
+        fig, ax = plt.subplots(figsize=(8, 6))
         colors = plt.cm.get_cmap('tab10', num_clusters)
         for cluster_id in range(num_clusters):
             cluster_points = df_jobs[df_jobs["cluster"] == cluster_id]
@@ -185,7 +166,7 @@ elif section == "Clustering":
                        color=colors(cluster_id), label=f"Cluster {cluster_id}", s=80, alpha=0.8)
         ax.set_xlabel("PCA 1")
         ax.set_ylabel("PCA 2")
-        ax.set_title("Job Postings Clusters Visualization (TechWolf JobBERT-v2 Embeddings)")
+        ax.set_title("Job Postings Clusters Visualization (FastText Embeddings)")
         ax.legend()
         st.pyplot(fig)
 
@@ -239,7 +220,9 @@ elif section == "CV Analysis":
 st.markdown(
 """
 ---
-*This dashboard demonstrates a job recommendation system using CV uploads, the [TechWolf JobBERT-v2](https://huggingface.co/TechWolf/JobBERT-v2) pretrained model from Hugging Face to create embeddings of job posting texts, clustering job postings, and basic CV analyses.*
+*This dashboard demonstrates a job recommendation system using CV uploads, FastText pretrained embeddings via gensim to create embeddings of job posting texts, clustering job postings, and basic CV analyses.*
 
 **Requirements:**
-- `transformers` and `torch` Python packages. Install via:
+
+- Install required packages via:
+
