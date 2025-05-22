@@ -99,7 +99,7 @@ if cv_text and "Unsupported file format" not in cv_text:
     top_matches = filtered_jobs.sort_values(by='similarity', ascending=False).head(10)
 
     for idx, row in top_matches.iterrows():
-        st.markdown(f"### {row['job_title']} (Similarity: {row['similarity']:.3f})")
+        st.markdown(f"### {row['text']} (Similarity: {row['similarity']:.3f})")
         st.write(row['combined_text'][:300] + "...")
         st.markdown("---")
 else:
