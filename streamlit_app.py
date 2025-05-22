@@ -9,14 +9,14 @@ from sklearn.metrics.pairwise import cosine_similarity
 @st.cache_data
 def load_user_data():
     url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/user_applicant_jobs.csv"
-    df_user = pd.read_csv(url)
-    return df_jobs
+    df = pd.read_csv(url)
+    return df
 
 @st.cache_data
 def load_jobs_data():
     url = "https://raw.githubusercontent.com/adinplb/dp-machinelearning-ai/refs/heads/master/dataset/combined_jobs_2000.csv"
-    df_jobs = pd.read_csv(url)
-    return df_jobs
+    df = pd.read_csv(url)
+    return df
 
 def extract_text_from_uploaded_file(uploaded_file):
     if uploaded_file is not None:
@@ -50,11 +50,11 @@ Upload your CV, explore job listings, and find best matches based on semantic si
 
 with st.expander ("Postingan Lowongan Pekerjaan"):
     st.write ("**Sudah di seleksi fitur dan merging**")
-    df_jobs
+    jobs_data
 
 with st.expander ("Profile User"):
     st.write ("**Sudah di seleksi fitur dan merging**")
-    df_user
+    user_data
 
 # Sidebar for file upload
 st.sidebar.header("Upload your CV")
@@ -72,13 +72,13 @@ jobs_data = load_jobs_data()
 st.sidebar.markdown("---")
 st.sidebar.header("Job Listings")
 
-job_titles = jobs_data['job_title'].unique()
+job_titles = jobs_data['text'].unique()
 selected_jobs = st.sidebar.multiselect("Filter jobs by title", options=job_titles, default=job_titles[:5])
 
-filtered_jobs = jobs_data[jobs_data['job_title'].isin(selected_jobs)]
+filtered_jobs = jobs_data[jobs_data['text'].isin(selected_jobs)]
 
 st.subheader(f"Job Listings ({len(filtered_jobs)})")
-st.dataframe(filtered_jobs[['job_id', 'job_title']].reset_index(drop=True))
+st.dataframe(filtered_jobs[['Job.ID','text', 'Title']].reset_index(drop=True))
 
 if cv_text and "Unsupported file format" not in cv_text:
     st.subheader("Top Job Matches Based on Your CV")
