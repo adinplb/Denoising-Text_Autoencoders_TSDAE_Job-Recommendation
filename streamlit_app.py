@@ -1,20 +1,19 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
 import re
-from io import StringIO
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
+from transformers import AutoTokenizer, AutoModel
+import torch
+
 st.set_page_config(page_title="Job Recommendation Dashboard", layout="wide")
 
-st.title("🚀 Job Recommendation Dashboard")
+st.title("🚀 Job Recommendation Dashboard with TechWolf JobBERT-v2 Embeddings")
 
 # Sidebar Navigation
-
 st.sidebar.title("Navigation")
 section = st.sidebar.radio("Go to", (
     "Upload CVs",
@@ -24,58 +23,22 @@ section = st.sidebar.radio("Go to", (
     "CV Analysis"
 ))
 
-# Sidebar: Upload CVs widget
+# Sidebar: Upload CVs widget for relevant sections
 if section == "Upload CVs" or section == "CV Analysis":
     uploaded_files = st.sidebar.file_uploader("Upload up to 5 CV files (PDF or TXT)", type=["pdf", "txt"], accept_multiple_files=True)
 else:
     uploaded_files = None
 
-# Sample job posting dataset (small demo)
-job_postings = [
-    {
-        "job_id": 1,
-        "title": "Data Scientist",
-        "company": "Tech Innovations",
-        "location": "San Francisco, CA",
-        "description": "Looking for a Data Scientist experienced in Python, machine learning, data analysis, and statistics.",
-        "requirements": "Python, Machine Learning, Statistics, Data Analysis, SQL"
-    },
-    {
-        "job_id": 2,
-        "title": "Software Engineer",
-        "company": "Dev Solutions",
-        "location": "New York, NY",
-        "description": "Seeking a software engineer skilled in Java, Spring, cloud computing, and microservices.",
-        "requirements": "Java, Spring, Cloud, Microservices, REST APIs"
-    },
-    {
-        "job_id": 3,
-        "title": "Frontend Developer",
-        "company": "Creative Labs",
-        "location": "Austin, TX",
-        "description": "Frontend developer needed with expertise in React, JavaScript, CSS, and UI/UX principles.",
-        "requirements": "JavaScript, React, CSS, HTML, UI/UX"
-    },
-    {
-        "job_id": 4,
-        "title": "DevOps Engineer",
-        "company": "CloudWorks",
-        "location": "Seattle, WA",
-        "description": "DevOps Engineer with skills in Docker, Kubernetes, CI/CD pipelines, and AWS cloud services.",
-        "requirements": "Docker, Kubernetes, AWS, CI/CD, Terraform"
-    },
-    {
-        "job_id": 5,
-        "title": "Business Analyst",
-        "company": "Enterprise Corp",
-        "location": "Boston, MA",
-        "description": "Looking for a Business Analyst with strong communication skills and experience gathering requirements.",
-        "requirements": "Business Analysis, Communication, Requirements Gathering, Agile"
-    }
-]
-
-# Convert to DataFrame
-df_jobs = pd.DataFrame(job_postings)
+@st.cache_data(show_spinner=True)
+def load_job_dataset():
+    url = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
+    df = pd.read_csv(url)
+    # ensure expected columns
+    expected_cols = {"Job.ID", "text", "Title"}
+    if not expected_cols.issubset(set(df.columns)):
+        st.error("Dataset does not contain required columns: Job.ID, text, Title")
+        return pd.DataFrame()
+    return df
 
 def extract_text_from_txt(file) -> str:
     try:
@@ -89,16 +52,7 @@ def extract_text_from_pdf(file) -> str:
     return "[PDF content parsing not implemented in this demo]"
 
 def analyze_cv_text(text, job_keywords_set):
-    """
-    Perform 5 analyses on CV text:
-    1. Word count
-    2. Top 5 keywords (using simple frequency excluding stop words)
-    3. Skill matching count (overlap with job keywords)
-    4. Most common words (top 5)
-    5. Summary - first 2 sentences
-    """
     from collections import Counter
-    import string
 
     stopwords = set([
         "and","or","the","a","an","of","to","in","with","for","on","at",
@@ -107,24 +61,16 @@ def analyze_cv_text(text, job_keywords_set):
         "will","would","can","could","should"
     ])
 
-    # sanitize text
     text_lower = text.lower()
-    # tokenize
     words = re.findall(r"\\b[a-z]{2,}\\b", text_lower)
-    # filter stop words
     words_filtered = [w for w in words if w not in stopwords]
     word_count = len(words_filtered)
     word_freq = Counter(words_filtered)
     top_keywords = [w for w, c in word_freq.most_common(5)]
 
-    # Skill match count: count how many job keywords appear in CV
     skill_matches = job_keywords_set.intersection(set(words_filtered))
     skill_match_count = len(skill_matches)
 
-    # Most common words (top 5)
-    most_common = top_keywords
-
-    # Summary: first two sentences
     sentences = re.split(r'(?<=[.!?]) +', text.strip())
     summary = " ".join(sentences[:2]) if len(sentences) >= 2 else text.strip()
 
@@ -135,6 +81,43 @@ def analyze_cv_text(text, job_keywords_set):
         "Matched Skills": list(skill_matches),
         "Summary": summary
     }
+
+@st.cache_resource(show_spinner=True)
+def load_jobbert_model():
+    model_name = "TechWolf/JobBERT-v2"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name)
+    model.eval()
+    return tokenizer, model
+
+def embed_texts(texts, tokenizer, model, device='cpu', batch_size=16):
+    embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch_texts = texts[i:i+batch_size]
+        encoded_input = tokenizer(batch_texts, padding=True, truncation=True, max_length=512, return_tensors="pt")
+        encoded_input = {k: v.to(device) for k,v in encoded_input.items()}
+        with torch.no_grad():
+            model_output = model(**encoded_input)
+            # Use pooled output (corresponds to CLS token representation)
+            if hasattr(model_output, "pooler_output") and model_output.pooler_output is not None:
+                pooled = model_output.pooler_output
+            else:
+                # fallback to mean pooling if pooler_output is not available
+                token_embeddings = model_output.last_hidden_state
+                attention_mask = encoded_input['attention_mask'].unsqueeze(-1).expand(token_embeddings.size()).float()
+                masked_embeddings = token_embeddings * attention_mask
+                summed = torch.sum(masked_embeddings, dim=1)
+                counts = torch.clamp(attention_mask.sum(dim=1), min=1e-9)
+                pooled = summed / counts
+            pooled = pooled.cpu().numpy()
+            embeddings.extend(pooled)
+    return np.vstack(embeddings)
+
+# Load Dataset once
+df_jobs = load_job_dataset()
+
+# Device selection
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 if section == "Upload CVs":
     st.header("1️⃣ Upload Your CVs (Max 5)")
@@ -150,52 +133,61 @@ if section == "Upload CVs":
 elif section == "Job Posting Dataset":
     st.header("2️⃣ Job Posting Dataset")
 
-    st.dataframe(df_jobs[['job_id', 'title', 'company', 'location']])
+    st.dataframe(df_jobs[['Job.ID', 'Title', 'text']])
 
 elif section == "Embeddings":
-    st.header("3️⃣ Embeddings of Job Posting Dataset")
+    st.header("3️⃣ Create Embeddings of Job Posting Dataset Using TechWolf JobBERT-v2")
 
-    # Use TF-IDF on job descriptions + requirements combined text
-    df_jobs["text"] = df_jobs["description"] + " " + df_jobs["requirements"]
+    if df_jobs.empty:
+        st.error("Job posting dataset failed to load.")
+    else:
+        with st.spinner("Loading JobBERT-v2 model..."):
+            tokenizer, model = load_jobbert_model()
+            model.to(device)
 
-    vectorizer = TfidfVectorizer(stop_words='english')
-    X_tfidf = vectorizer.fit_transform(df_jobs["text"])
+        texts = df_jobs["text"].fillna("").tolist()
+        with st.spinner("Computing embeddings for job postings..."):
+            job_embeddings = embed_texts(texts, tokenizer, model, device=device, batch_size=32)
 
-    st.write("TF-IDF vectorizer created job posting embeddings with shape:", X_tfidf.shape)
+        st.write("Embeddings created for", len(texts), "job postings.")
+        st.write("Embedding vector shape:", job_embeddings.shape)
+
+        st.session_state['job_embeddings'] = job_embeddings
 
 elif section == "Clustering":
-    st.header("4️⃣ Clustering Job Postings with KMeans")
+    st.header("4️⃣ Clustering Job Postings Using TechWolf JobBERT-v2 Embeddings")
 
-    # Use TF-IDF on job descriptions + requirements combined text
-    df_jobs["text"] = df_jobs["description"] + " " + df_jobs["requirements"]
-    vectorizer = TfidfVectorizer(stop_words='english')
-    X_tfidf = vectorizer.fit_transform(df_jobs["text"])
+    if "job_embeddings" not in st.session_state:
+        st.warning("Please generate embeddings first in the 'Embeddings' section.")
+    else:
+        job_embeddings = st.session_state['job_embeddings']
+        num_clusters = 5
+        model = KMeans(n_clusters=num_clusters, random_state=42)
+        with st.spinner("Clustering job postings..."):
+            cluster_labels = model.fit_predict(job_embeddings)
 
-    # Use KMeans to cluster job postings, K=3
-    num_clusters = 3
-    model = KMeans(n_clusters=num_clusters, random_state=42)
-    df_jobs["cluster"] = model.fit_predict(X_tfidf)
+        df_jobs['cluster'] = cluster_labels
 
-    st.write("Job postings clustered into", num_clusters, "clusters.")
-    clustered_jobs = df_jobs[["job_id", "title", "company", "location", "cluster"]]
-    st.dataframe(clustered_jobs)
+        st.write(f"Job postings clustered into {num_clusters} clusters.")
+        st.dataframe(df_jobs[['Job.ID', 'Title', 'cluster']])
 
-    # Visualize clusters using PCA
-    pca = PCA(n_components=2, random_state=42)
-    coords = pca.fit_transform(X_tfidf.toarray())
-    df_jobs["x"] = coords[:,0]
-    df_jobs["y"] = coords[:,1]
+        # PCA visualization
+        pca = PCA(n_components=2, random_state=42)
+        coords = pca.fit_transform(job_embeddings)
+        df_jobs["x"] = coords[:,0]
+        df_jobs["y"] = coords[:,1]
 
-    fig, ax = plt.subplots()
-    colors = ['red', 'green', 'blue']
-    for cluster_id in range(num_clusters):
-        cluster_points = df_jobs[df_jobs["cluster"]==cluster_id]
-        ax.scatter(cluster_points["x"], cluster_points["y"], c=colors[cluster_id], label=f"Cluster {cluster_id}", s=100, alpha=0.7)
-    ax.set_xlabel("PCA 1")
-    ax.set_ylabel("PCA 2")
-    ax.set_title("Job Postings Clusters Visualization")
-    ax.legend()
-    st.pyplot(fig)
+        fig, ax = plt.subplots(figsize=(8,6))
+        colors = plt.cm.get_cmap('tab10', num_clusters)
+        for cluster_id in range(num_clusters):
+            cluster_points = df_jobs[df_jobs["cluster"] == cluster_id]
+            ax.scatter(cluster_points["x"], cluster_points["y"],
+                       color=colors(cluster_id), label=f"Cluster {cluster_id}", s=80, alpha=0.8)
+        ax.set_xlabel("PCA 1")
+        ax.set_ylabel("PCA 2")
+        ax.set_title("Job Postings Clusters Visualization (TechWolf JobBERT-v2 Embeddings)")
+        ax.legend()
+        st.pyplot(fig)
 
 elif section == "CV Analysis":
     st.header("5️⃣ CV Analysis Results")
@@ -206,10 +198,12 @@ elif section == "CV Analysis":
         if len(uploaded_files) > 5:
             st.error("Please upload a maximum of 5 CV files.")
         else:
-            # Aggregate all job keywords as a set
             all_job_keywords = set()
-            for req in df_jobs["requirements"]:
-                kws = set([kw.strip().lower() for kw in req.split(",")])
+            for txt in df_jobs["text"].fillna(""):
+                kws = set(re.findall(r"\\b[a-z]{2,}\\b", txt.lower()))
+                all_job_keywords.update(kws)
+            for title in df_jobs["Title"].fillna(""):
+                kws = set(re.findall(r"\\b[a-z]{2,}\\b", title.lower()))
                 all_job_keywords.update(kws)
 
             for i, uploaded_file in enumerate(uploaded_files):
@@ -228,7 +222,6 @@ elif section == "CV Analysis":
 
                 analysis_results = analyze_cv_text(content, all_job_keywords)
 
-                # Display analyses in columns
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**Word Count:** {analysis_results['Word Count']}")
@@ -245,6 +238,7 @@ elif section == "CV Analysis":
 
 st.markdown("""
 ---
-*This dashboard demonstrates a basic job recommendation system using CV uploads, job posting data visualization, embedding creation with TF-IDF, and job posting clustering with KMeans.*
-""")
+*This dashboard demonstrates a job recommendation system using CV uploads, the [TechWolf JobBERT-v2](https://huggingface.co/TechWolf/JobBERT-v2) pretrained model from Hugging Face to create embeddings of job posting texts, clustering job postings, and basic CV analyses.*
 
+**Requirements:**
+- `transformers` and `torch` Python packages. Install via:
