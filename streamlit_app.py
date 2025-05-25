@@ -8,10 +8,17 @@ import os
 from nltk import word_tokenize
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 import random
+import nltk
 
 # --- Data URLs ---
 JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
 USER_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/user_applicant_jobs.csv"
+
+# --- NLTK Download (Important for Streamlit Cloud) ---
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
 
 # --- Helper Functions (from your Colab) ---
 def denoise_text(text, method='a', del_ratio=0.6, word_freq_dict=None, freq_threshold=100):
