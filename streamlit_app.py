@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from sentence_transformers.util import batch_to_device, cos_sim  # Import cos_sim as well
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 import os
@@ -9,6 +10,7 @@ from nltk import word_tokenize
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 import random
 import nltk
+import torch  # Make sure torch is imported
 
 # --- Data URLs ---
 JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
@@ -132,19 +134,38 @@ def get_top_n_local_search(embeddings_user, df_clustered_jobbert, embedding_matr
     return results
 
 # --- Data and Model Loading (Cached) ---
-@st.cache_data
-def load_data():
-    job_titles = pd.read_csv(JOB_DATA_URL)
-    user_corpus = pd.read_csv(USER_DATA_URL)
-    return job_titles, user_corpus
+@st.cache_data(show_spinner="Loading job titles...")
+def load_job_data():
+    try:
+        job_titles = pd.read_csv(JOB_DATA_URL)
+        return job_titles
+    except Exception as e:
+        st.error(f"Error loading job titles: {e}")
+        return None
 
-@st.cache_resource
+@st.cache_data(show_spinner="Loading user data...")
+def load_user_data():
+    try:
+        user_corpus = pd.read_csv(USER_DATA_URL)
+        return user_corpus
+    except Exception as e:
+        st.error(f"Error loading user data: {e}")
+        return None
+
+@st.cache_resource(show_spinner="Loading the JobBERT model...")
 def load_model():
-    model = SentenceTransformer("TechWolf/JobBERT-v2")
-    return model
+    try:
+        model = SentenceTransformer("TechWolf/JobBERT-v2")
+        return model
+    except Exception as e:
+        st.error(f"Error loading the JobBERT model: {e}")
+        return None
 
-@st.cache_data
+@st.cache_data(show_spinner="Processing job data...")
 def process_job_data(job_titles, _model):  # Changed 'model' to '_model'
+    if job_titles is None or _model is None:
+        return None, None  # Handle cases where data/model loading failed
+
     job_titles['noisy_text'] = job_titles['text'].fillna("").apply(lambda x: denoise_text(x))
     clean_texts = job_titles['text'].fillna("").tolist()
     noisy_texts = job_titles['noisy_text'].tolist()
@@ -154,8 +175,11 @@ def process_job_data(job_titles, _model):  # Changed 'model' to '_model'
     job_titles['jobbert_tsdae_embedding'] = tsdae_embeddings.tolist()
     return job_titles, tsdae_embeddings
 
-@st.cache_data
+@st.cache_data(show_spinner="Clustering job embeddings...")
 def cluster_embeddings(job_titles, num_clusters=20):
+    if job_titles is None:
+        return None, None, None
+
     embedding_matrix = np.vstack(job_titles['jobbert_tsdae_embedding'].values)
     kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10) # Added n_init to suppress warning
     kmeans.fit(embedding_matrix)
@@ -169,8 +193,11 @@ def cluster_embeddings(job_titles, num_clusters=20):
     })
     return df_clustered_jobbert, kmeans, embedding_matrix
 
-@st.cache_data
+@st.cache_data(show_spinner="Processing user data...")
 def process_user_data(user_corpus, _model): # Changed 'model' to '_model'
+    if user_corpus is None or _model is None:
+        return None, None
+
     texts_user = user_corpus["text"].fillna("").tolist()
     embeddings_user = encode(_model, texts_user) # Use _model here
     user_corpus['jobbert_embedding'] = embeddings_user.tolist()
@@ -181,13 +208,22 @@ def main():
     st.title("Job Recommendation Dashboard")
 
     # Load data and model
-    job_titles, user_corpus = load_data()
+    job_titles = load_job_data()
+    user_corpus = load_user_data()
     model = load_model()
+
+    # Check if data or model loading failed
+    if job_titles is None or user_corpus is None or model is None:
+        st.stop()  # Stop the app if there's an error
 
     # Process data and cluster embeddings
     job_titles, tsdae_embeddings = process_job_data(job_titles, model)
     df_clustered_jobbert, kmeans, embedding_matrix = cluster_embeddings(job_titles)
     user_corpus, embeddings_user = process_user_data(user_corpus, model)
+
+    # Check if processing or clustering failed
+    if df_clustered_jobbert is None or embeddings_user is None:
+        st.stop()
 
     # Display raw data in expanders
     with st.expander("Show Job Titles Data"):
