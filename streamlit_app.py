@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
-from sentence_transformers.util import batch_to_device, cos_sim  # Import cos_sim as well
+from sentence_transformers.util import batch_to_device, cos_sim
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity
 import os
@@ -10,7 +10,7 @@ from nltk import word_tokenize
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 import random
 import nltk
-import torch  # Make sure torch is imported
+import torch
 
 # --- Data URLs ---
 JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
@@ -136,85 +136,117 @@ def get_top_n_local_search(embeddings_user, df_clustered_jobbert, embedding_matr
 # --- Data and Model Loading (Cached) ---
 @st.cache_data(show_spinner="Loading job titles...")
 def load_job_data():
+    st.write("load_job_data: Starting")  # Debugging
     try:
         job_titles = pd.read_csv(JOB_DATA_URL)
+        st.write("load_job_data: Finished loading job titles")  # Debugging
         return job_titles
     except Exception as e:
         st.error(f"Error loading job titles: {e}")
+        st.write(f"load_job_data: Error in load_job_data: {e}")  # Debugging
         return None
 
 @st.cache_data(show_spinner="Loading user data...")
 def load_user_data():
+    st.write("load_user_data: Starting")  # Debugging
     try:
         user_corpus = pd.read_csv(USER_DATA_URL)
+        st.write("load_user_data: Finished loading user data")  # Debugging
         return user_corpus
     except Exception as e:
         st.error(f"Error loading user data: {e}")
+        st.write(f"load_user_data: Error in load_user_data: {e}")  # Debugging
         return None
 
 @st.cache_resource(show_spinner="Loading the JobBERT model...")
 def load_model():
+    st.write("load_model: Starting")  # Debugging
     try:
         model = SentenceTransformer("TechWolf/JobBERT-v2")
+        st.write("load_model: Finished loading model")  # Debugging
         return model
     except Exception as e:
         st.error(f"Error loading the JobBERT model: {e}")
+        st.write(f"load_model: Error in load_model: {e}")  # Debugging
         return None
 
 @st.cache_data(show_spinner="Processing job data...")
 def process_job_data(job_titles, _model):  # Changed 'model' to '_model'
+    st.write("process_job_data: Starting")  # Debugging
     if job_titles is None or _model is None:
-        return None, None  # Handle cases where data/model loading failed
-
-    job_titles['noisy_text'] = job_titles['text'].fillna("").apply(lambda x: denoise_text(x))
-    clean_texts = job_titles['text'].fillna("").tolist()
-    noisy_texts = job_titles['noisy_text'].tolist()
-    clean_embeddings = encode(_model, clean_texts) # Use _model here
-    noisy_embeddings = encode(_model, noisy_texts) # And here
-    tsdae_embeddings = (clean_embeddings + noisy_embeddings) / 2.0
-    job_titles['jobbert_tsdae_embedding'] = tsdae_embeddings.tolist()
-    return job_titles, tsdae_embeddings
+        st.write("process_job_data: job_titles or _model is None")  # Debugging
+        return None, None
+    try:
+        job_titles['noisy_text'] = job_titles['text'].fillna("").apply(lambda x: denoise_text(x))
+        clean_texts = job_titles['text'].fillna("").tolist()
+        noisy_texts = job_titles['noisy_text'].tolist()
+        clean_embeddings = encode(_model, clean_texts) # Use _model here
+        noisy_embeddings = encode(_model, noisy_texts) # And here
+        tsdae_embeddings = (clean_embeddings + noisy_embeddings) / 2.0
+        job_titles['jobbert_tsdae_embedding'] = tsdae_embeddings.tolist()
+        st.write("process_job_data: Finished processing job data")  # Debugging
+        return job_titles, tsdae_embeddings
+    except Exception as e:
+        st.error(f"Error processing job data: {e}")
+        st.write(f"process_job_data: Error: {e}")  # Debugging
+        return None, None
 
 @st.cache_data(show_spinner="Clustering job embeddings...")
 def cluster_embeddings(job_titles, num_clusters=20):
+    st.write("cluster_embeddings: Starting")  # Debugging
     if job_titles is None:
+        st.write("cluster_embeddings: job_titles is None")  # Debugging
         return None, None, None
-
-    embedding_matrix = np.vstack(job_titles['jobbert_tsdae_embedding'].values)
-    kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10) # Added n_init to suppress warning
-    kmeans.fit(embedding_matrix)
-    cluster_labels = kmeans.labels_
-    df_clustered_jobbert = pd.DataFrame({
-        'Job.ID': job_titles['Job.ID'].values if 'Job.ID' in job_titles.columns else range(len(job_titles)),
-        'Title': job_titles['Title'].values if 'Title' in job_titles.columns else [None]*len(job_titles),
-        'text': job_titles['text'].values,
-        'cluster': cluster_labels,
-        'original_index': job_titles.index
-    })
-    return df_clustered_jobbert, kmeans, embedding_matrix
+    try:
+        embedding_matrix = np.vstack(job_titles['jobbert_tsdae_embedding'].values)
+        kmeans = KMeans(n_clusters=num_clusters, random_state=42, n_init=10) # Added n_init to suppress warning
+        kmeans.fit(embedding_matrix)
+        cluster_labels = kmeans.labels_
+        df_clustered_jobbert = pd.DataFrame({
+            'Job.ID': job_titles['Job.ID'].values if 'Job.ID' in job_titles.columns else range(len(job_titles)),
+            'Title': job_titles['Title'].values if 'Title' in job_titles.columns else [None]*len(job_titles),
+            'text': job_titles['text'].values,
+            'cluster': cluster_labels,
+            'original_index': job_titles.index
+        })
+        st.write("cluster_embeddings: Finished clustering")  # Debugging
+        return df_clustered_jobbert, kmeans, embedding_matrix
+    except Exception as e:
+        st.error(f"Error clustering job embeddings: {e}")
+        st.write(f"cluster_embeddings: Error: {e}")  # Debugging
+        return None, None, None
 
 @st.cache_data(show_spinner="Processing user data...")
 def process_user_data(user_corpus, _model): # Changed 'model' to '_model'
+    st.write("process_user_data: Starting")  # Debugging
     if user_corpus is None or _model is None:
+        st.write("process_user_data: user_corpus or _model is None")  # Debugging
         return None, None
-
-    texts_user = user_corpus["text"].fillna("").tolist()
-    embeddings_user = encode(_model, texts_user) # Use _model here
-    user_corpus['jobbert_embedding'] = embeddings_user.tolist()
-    return user_corpus, embeddings_user
+    try:
+        texts_user = user_corpus["text"].fillna("").tolist()
+        embeddings_user = encode(_model, texts_user) # Use _model here
+        user_corpus['jobbert_embedding'] = embeddings_user.tolist()
+        st.write("process_user_data: Finished processing user data")  # Debugging
+        return user_corpus, embeddings_user
+    except Exception as e:
+        st.error(f"Error processing user data: {e}")
+        st.write(f"process_user_data: Error: {e}")  # Debugging
+        return None, None
 
 # --- Main Streamlit App ---
 def main():
     st.title("Job Recommendation Dashboard")
+    st.write("main: App starting")  # Debugging
 
     # Load data and model
     job_titles = load_job_data()
     user_corpus = load_user_data()
     model = load_model()
 
-    # Check if data or model loading failed
+    # Check for errors
     if job_titles is None or user_corpus is None or model is None:
-        st.stop()  # Stop the app if there's an error
+        st.write("main: Error loading data or model. Stopping.")  # Debugging
+        st.stop()
 
     # Process data and cluster embeddings
     job_titles, tsdae_embeddings = process_job_data(job_titles, model)
@@ -223,6 +255,7 @@ def main():
 
     # Check if processing or clustering failed
     if df_clustered_jobbert is None or embeddings_user is None:
+        st.write("main: Error processing data. Stopping.")  # Debugging
         st.stop()
 
     # Display raw data in expanders
@@ -253,6 +286,8 @@ def main():
             for k, df in recommendations.items():
                 st.write(f"**{k.upper()}**")
                 st.dataframe(df[['Job.ID', 'Title', 'cluster', 'similarity', 'relevance_label']])
+
+    st.write("main: App finished successfully (if you see this, it's a good sign!)")  # Debugging
 
 if __name__ == "__main__":
     main()
