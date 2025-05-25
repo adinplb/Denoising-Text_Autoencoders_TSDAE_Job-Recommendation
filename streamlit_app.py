@@ -137,12 +137,12 @@ def load_model():
     return model
 
 @st.cache_data
-def process_job_data(job_titles, model):
+def process_job_data(job_titles, _model):  # Changed 'model' to '_model'
     job_titles['noisy_text'] = job_titles['text'].fillna("").apply(lambda x: denoise_text(x))
     clean_texts = job_titles['text'].fillna("").tolist()
     noisy_texts = job_titles['noisy_text'].tolist()
-    clean_embeddings = encode(model, clean_texts)
-    noisy_embeddings = encode(model, noisy_texts)
+    clean_embeddings = encode(_model, clean_texts) # Use _model here
+    noisy_embeddings = encode(_model, noisy_texts) # And here
     tsdae_embeddings = (clean_embeddings + noisy_embeddings) / 2.0
     job_titles['jobbert_tsdae_embedding'] = tsdae_embeddings.tolist()
     return job_titles, tsdae_embeddings
@@ -163,9 +163,9 @@ def cluster_embeddings(job_titles, num_clusters=20):
     return df_clustered_jobbert, kmeans, embedding_matrix
 
 @st.cache_data
-def process_user_data(user_corpus, model):
+def process_user_data(user_corpus, _model): # Changed 'model' to '_model'
     texts_user = user_corpus["text"].fillna("").tolist()
-    embeddings_user = encode(model, texts_user)
+    embeddings_user = encode(_model, texts_user) # Use _model here
     user_corpus['jobbert_embedding'] = embeddings_user.tolist()
     return user_corpus, embeddings_user
 
@@ -181,6 +181,13 @@ def main():
     job_titles, tsdae_embeddings = process_job_data(job_titles, model)
     df_clustered_jobbert, kmeans, embedding_matrix = cluster_embeddings(job_titles)
     user_corpus, embeddings_user = process_user_data(user_corpus, model)
+
+    # Display raw data in expanders
+    with st.expander("Show Job Titles Data"):
+        st.dataframe(job_titles)
+
+    with st.expander("Show User Corpus Data"):
+        st.dataframe(user_corpus)
 
     # User input for job query
     query_text = st.text_input("Enter a job title to find recommendations:", "java developer")
