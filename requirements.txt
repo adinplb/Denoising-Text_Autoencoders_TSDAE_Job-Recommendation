@@ -13,3 +13,5 @@ python-docx
 plotly
 umap-learn
 kaggle
+kagglehub
+
