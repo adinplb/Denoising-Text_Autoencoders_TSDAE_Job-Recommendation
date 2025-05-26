@@ -59,12 +59,14 @@ if 'job_text_embeddings' not in st.session_state:
     st.session_state['job_text_embeddings'] = None
 if 'job_clusters' not in st.session_state:
     st.session_state['job_clusters'] = None
-if 'cv_text' not in st.session_state:
+if 'cv_text' not in st.session_state: # Kept for single CV context if needed elsewhere, but multi-CV is primary
     st.session_state['cv_text'] = ""
 if 'tsdae_embeddings' not in st.session_state:
     st.session_state['tsdae_embeddings'] = None
-if 'cv_embedding' not in st.session_state:
+if 'cv_embedding' not in st.session_state: # Kept for single CV context if needed elsewhere
     st.session_state['cv_embedding'] = None
+if 'uploaded_cvs_data' not in st.session_state: # New: stores list of {'filename', 'text', 'embedding'} for multiple CVs
+    st.session_state['uploaded_cvs_data'] = []
 
 
 # --- Helper Functions ---
@@ -139,24 +141,19 @@ def preprocess_text_with_intermediate(data_df):
                 intermediate = {}
                 if isinstance(text, str):
                     intermediate['original'] = text
-                    # Symbol Removal
                     symbol_removed = text.translate(str.maketrans('', '', string.punctuation))
                     symbol_removed = re.sub(r'[^\w\s]', '', symbol_removed)
                     intermediate['symbol_removed'] = symbol_removed
-                    # Case Folding
                     case_folded = symbol_removed.lower()
                     intermediate['case_folded'] = case_folded
-                    # Tokenize (for filtering/stopwords/stemming steps)
                     word_tokens = word_tokenize(case_folded)
-                    intermediate['tokenized'] = " ".join(word_tokens) # Store tokenized for display
-                    # Stopwords Removal
+                    intermediate['tokenized'] = " ".join(word_tokens)
                     stop_words = set(stopwords.words('english'))
                     filtered = [w for w in word_tokens if w not in stop_words]
                     intermediate['stopwords_removed'] = " ".join(filtered)
-                    # Stemming
                     porter = PorterStemmer()
                     stemmed = [porter.stem(w) for w in filtered]
-                    intermediate['stemmed'] = " ".join(stemmed) # This is the final preprocessed text
+                    intermediate['stemmed'] = " ".join(stemmed)
                     processed_results.append(intermediate)
                 else:
                     processed_results.append({
@@ -166,7 +163,7 @@ def preprocess_text_with_intermediate(data_df):
                 progress_bar.progress((i + 1) / total_rows)
                 status_text.text(f"Processed {i + 1}/{total_rows} entries.")
             data_df['preprocessing_steps'] = processed_results
-            data_df['processed_text'] = [d['stemmed'] for d in processed_results] # Final preprocessed text
+            data_df['processed_text'] = [d['stemmed'] for d in processed_results]
             st.success("Preprocessing of 'text' column complete!")
             progress_bar.empty()
             status_text.empty()
@@ -540,17 +537,23 @@ def job_recommendation_page():
     st.header("Job Recommendation")
     st.write("This page provides job recommendations based on your uploaded CV and the clustered job postings.")
 
-    # --- CV Upload (re-display from sidebar for context if needed, but the main upload is in sidebar) ---
-    st.subheader("Your Uploaded CV")
-    if st.session_state['cv_text']:
-        st.text_area("CV Content", st.session_state['cv_text'], height=200, disabled=True)
+    # --- Display Uploaded CVs ---
+    st.subheader("Your Uploaded CVs")
+    if st.session_state['uploaded_cvs_data']:
+        for i, cv_data in enumerate(st.session_state['uploaded_cvs_data']):
+            st.write(f"**CV {i+1}: {cv_data['filename']}**")
+            st.text_area(f"CV {i+1} Content", cv_data['text'], height=150, disabled=True, key=f"cv_content_{i}")
+            if cv_data['embedding'] is not None:
+                st.write(f"CV {i+1} embedding generated.")
+            else:
+                st.warning(f"CV {i+1} embedding not generated.")
+            st.write("---")
     else:
-        st.info("Please upload your CV on the 'Upload CV' page first.")
-        return
+        st.info("Please upload your CV(s) on the 'Upload CV' page first.")
+        return # Exit if no CVs are uploaded
 
     # --- Job Recommendation Logic ---
-    if st.session_state['job_clusters'] is not None and st.session_state['cv_embedding'] is not None and st.session_state['data'] is not None:
-        st.subheader("Job Recommendations")
+    if st.session_state['job_clusters'] is not None and st.session_state['data'] is not None:
         
         # Determine which job embeddings to use for similarity matching
         job_embeddings_for_similarity = None
@@ -566,68 +569,100 @@ def job_recommendation_page():
 
         data = st.session_state['data']
         job_clusters = st.session_state['job_clusters']
-        cv_embedding = st.session_state['cv_embedding']
 
-        # Calculate cosine similarity between CV embedding and all job embeddings
-        # Ensure CV embedding is 2D for cosine_similarity
-        cv_embedding_2d = cv_embedding.reshape(1, -1) if cv_embedding.ndim == 1 else cv_embedding
-        
-        similarities = cosine_similarity(cv_embedding_2d, job_embeddings_for_similarity)[0]
-        data['similarity_score'] = similarities
-        
-        # Sort and get top recommendations
-        recommended_jobs = data.sort_values(by='similarity_score', ascending=False).head(20)
+        if st.button("Generate Recommendations for All Uploaded CVs"):
+            for i, cv_data in enumerate(st.session_state['uploaded_cvs_data']):
+                cv_filename = cv_data['filename']
+                cv_embedding = cv_data['embedding']
 
-        if not recommended_jobs.empty:
-            st.dataframe(recommended_jobs[['Job.ID', 'Title', 'similarity_score', 'cluster', 'text']], use_container_width=True)
-        else:
-            st.info("No job recommendations found.")
-    elif st.session_state['cv_text'] and st.session_state['job_clusters'] is None:
-        st.info("Please cluster the job embeddings first on the 'Clustering Job2Vec' page to get cluster-based recommendations.")
-    elif st.session_state['cv_text'] and st.session_state['cv_embedding'] is None:
-        st.info("Generating CV embedding...")
-        # This part will be triggered by the CV upload in the upload_cv_page
-        # and the embedding will be stored in session_state.
-        # We don't re-generate here to avoid redundant computation.
+                if cv_embedding is not None:
+                    st.subheader(f"Recommendations for {cv_filename}")
+                    # Ensure CV embedding is 2D for cosine_similarity
+                    cv_embedding_2d = cv_embedding.reshape(1, -1) if cv_embedding.ndim == 1 else cv_embedding
+                    
+                    similarities = cosine_similarity(cv_embedding_2d, job_embeddings_for_similarity)[0]
+                    
+                    # Create a temporary DataFrame for this CV's recommendations
+                    temp_rec_df = data.copy()
+                    temp_rec_df['similarity_score'] = similarities
+                    
+                    # Sort and get top recommendations
+                    recommended_jobs = temp_rec_df.sort_values(by='similarity_score', ascending=False).head(20)
+
+                    if not recommended_jobs.empty:
+                        st.dataframe(recommended_jobs[['Job.ID', 'Title', 'similarity_score', 'cluster', 'text']], use_container_width=True)
+                    else:
+                        st.info(f"No job recommendations found for {cv_filename}.")
+                    st.write("---") # Separator for clarity
+                else:
+                    st.warning(f"Skipping recommendations for {cv_filename}: CV embedding not generated.")
+    elif st.session_state['uploaded_cvs_data'] and st.session_state['job_clusters'] is None:
+        st.info("Please cluster the job embeddings first on the 'Clustering Job2Vec' page to get recommendations.")
     else:
-        st.info("Please upload your CV and process job data/embeddings to get recommendations.")
+        st.info("Please upload your CV(s) and process job data/embeddings/clusters to get recommendations.")
 
 
 def upload_cv_page():
-    st.header("Upload CV")
-    st.write("Upload your CV in PDF or Word format.")
-    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
-    if uploaded_cv is not None:
-        file_extension = uploaded_cv.name.split(".")[-1].lower()
-        try:
-            if file_extension == "pdf":
-                st.session_state['cv_text'] = extract_text_from_pdf(uploaded_cv)
-            elif file_extension == "docx":
-                st.session_state['cv_text'] = extract_text_from_docx(uploaded_cv)
-            st.success("CV uploaded successfully!")
-            if st.session_state['cv_text']:
-                st.subheader("Uploaded CV Content (Preview)")
-                st.text_area("CV Text", st.session_state['cv_text'], height=300)
+    st.header("Upload CV(s)")
+    st.write("Upload your CV(s) in PDF or Word format (max 5 files).")
+    uploaded_files = st.file_uploader("Choose PDF or DOCX files", type=["pdf", "docx"], accept_multiple_files=True)
+    
+    if uploaded_files:
+        if len(uploaded_files) > 5:
+            st.warning("You can upload a maximum of 5 CVs. Only the first 5 will be processed.")
+            uploaded_files = uploaded_files[:5]
+
+        st.session_state['uploaded_cvs_data'] = [] # Clear previous uploads
+        bert_model = load_bert_model() # Load BERT model once for all CVs
+
+        if not bert_model:
+            st.error("BERT model failed to load. Cannot process CVs.")
+            return
+
+        with st.spinner("Processing uploaded CVs..."):
+            cv_upload_progress_bar = st.progress(0)
+            cv_upload_status_text = st.empty()
+
+            for i, uploaded_file in enumerate(uploaded_files):
+                file_extension = uploaded_file.name.split(".")[-1].lower()
+                cv_text = ""
+                try:
+                    if file_extension == "pdf":
+                        cv_text = extract_text_from_pdf(uploaded_file)
+                    elif file_extension == "docx":
+                        cv_text = extract_text_from_docx(uploaded_file)
+                    
+                    if cv_text:
+                        processed_cv_text = preprocess_text(cv_text)
+                        cv_embedding = generate_embeddings_with_progress(bert_model, [processed_cv_text])[0]
+                        
+                        st.session_state['uploaded_cvs_data'].append({
+                            'filename': uploaded_file.name,
+                            'text': cv_text,
+                            'embedding': cv_embedding
+                        })
+                        st.success(f"Processed CV: {uploaded_file.name}")
+                    else:
+                        st.warning(f"Could not extract text from {uploaded_file.name}.")
+                except Exception as e:
+                    st.error(f"Error processing {uploaded_file.name}: {e}")
                 
-                # Generate CV Embedding immediately after upload
-                bert_model = load_bert_model()
-                if bert_model:
-                    processed_cv_text = preprocess_text(st.session_state['cv_text'])
-                    st.session_state['cv_embedding'] = generate_embeddings_with_progress(bert_model, [processed_cv_text])[0]
-                    st.success("CV embedding generated!")
-                else:
-                    st.warning("BERT model not loaded. Cannot generate CV embedding.")
+                cv_upload_progress_bar.progress((i + 1) / len(uploaded_files))
+                cv_upload_status_text.text(f"Processed {i + 1}/{len(uploaded_files)} CVs.")
+            
+            cv_upload_progress_bar.empty()
+            cv_upload_status_text.empty()
+            st.success("All selected CVs processed!")
+
+    elif st.session_state['uploaded_cvs_data']:
+        st.info("Currently uploaded CVs:")
+        for i, cv_data in enumerate(st.session_state['uploaded_cvs_data']):
+            st.write(f"- {cv_data['filename']}")
+            st.text_area(f"CV {i+1} Content (Cached)", cv_data['text'], height=100, disabled=True, key=f"cached_cv_content_{i}")
+            if cv_data['embedding'] is not None:
+                st.info("Embedding generated.")
             else:
-                st.warning("Could not extract text from the uploaded CV.")
-        except Exception as e:
-            st.error(f"Error reading CV file: {e}")
-    elif st.session_state['cv_text']:
-        st.info("CV already uploaded:")
-        st.text_area("Current CV Content", st.session_state['cv_text'], height=200, disabled=True)
-        if st.session_state['cv_embedding'] is not None:
-            st.info("CV embedding already generated.")
-        else:
-            st.info("CV text available, but embedding not generated. Please ensure BERT model is loaded.")
+                st.warning("Embedding not generated.")
 
 
 # --- Main App Logic (Page Navigation) ---
