@@ -11,4 +11,4 @@ nltk
 pdfminer.six
 python-docx
 plotly
-umap
+umap-learn
