@@ -1,83 +1,75 @@
 import streamlit as st
 import pandas as pd
-import kagglehub
+import numpy as np
+import plotly.express as px
 import os
 
 # --- Constants ---
-KAGGLE_DATASET_PATH = "kandij/job-recommendation-datasets"
-DATA_DIR = "data"
-FILENAME_TO_LOAD = "Combined_Jobs_Final.csv"  # Specify the file you want to load
+DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
+RELEVANT_FEATURES = ['Job.ID', 'text', 'Title']
 
-# --- Function to Load Data from Kaggle using kagglehub ---
-@st.cache_data(show_spinner=f"Downloading and loading '{FILENAME_TO_LOAD}' from Kaggle...")
-def load_data_from_kaggle_hub(dataset_path, filename):
-    """Downloads a specific file from a Kaggle dataset using kagglehub and loads it."""
+# --- Function to Load Data from URL ---
+@st.cache_data(show_spinner='Loading data...')
+def load_data_from_url(url):
     try:
-        # Create the data directory if it doesn't exist
-        if not os.path.exists(DATA_DIR):
-            os.makedirs(DATA_DIR)
-
-        download_path = kagglehub.dataset_download(dataset_path, path=DATA_DIR, force_download=False)
-        filepath = os.path.join(download_path, filename)
-
-        if os.path.exists(filepath):
-            try:
-                df = pd.read_csv(filepath)
-                st.success(f"Successfully loaded '{filename}' from Kaggle.")
-                return df
-            except Exception as e_read:
-                st.error(f"Error reading file '{filename}': {e_read}")
-                return None
-        else:
-            st.error(f"Error: File '{filename}' not found after downloading.")
-            return None
-    except Exception as e_download:
-        st.error(f"Error downloading data from Kaggle: {e_download}")
+        df = pd.read_csv(url)
+        st.success('Successfully loaded data!')
+        return df[RELEVANT_FEATURES]  # Select only the relevant features
+    except Exception as e:
+        st.error(f'Error loading data from URL: {e}')
         return None
 
 # --- Main Dashboard ---
-st.title("Kaggle Dataset Explorer (using kagglehub)")
+st.title('Exploratory Data Analysis of Job Data')
 
-data_to_display = load_data_from_kaggle_hub(KAGGLE_DATASET_PATH, FILENAME_TO_LOAD)
+data = load_data_from_url(DATA_URL)
 
-if data_to_display is not None:
-    st.subheader(f"Data: {FILENAME_TO_LOAD}")
-    st.dataframe(data_to_display, use_container_width=True)
+if data is not None:
+    st.subheader('Data Preview')
+    st.dataframe(data.head(), use_container_width=True)
 
-    st.subheader("Information about Features")
-    if not data_to_display.empty:
-        feature_list = data_to_display.columns.tolist()
-        st.write(f"Total Features: **{len(feature_list)}**")
-        st.write("**Features:**")
-        st.code(str(feature_list))
+    st.subheader('Search for a Word')
+    search_word = st.text_input("Enter a word to search in the 'text' column:")
 
-        st.subheader("Explore Feature Details")
-        selected_feature = st.selectbox("Select a Feature to see details:", [""] + feature_list)
-        if selected_feature:
-            # ... (rest of your feature exploration code) ...
-            st.write(f"**Feature:** `{selected_feature}`")
-            st.write(f"**Data Type:** `{data_to_display[selected_feature].dtype}`")
-            st.write(f"**Number of Unique Values:** `{data_to_display[selected_feature].nunique()}`")
-            st.write("**Sample Unique Values:**")
-            unique_values = data_to_display[selected_feature].unique()
-            if len(unique_values) > 20:
-                st.write(unique_values[:20])
-                st.caption(f"(Showing first 20 of {len(unique_values)} unique values)")
-            else:
-                st.write(unique_values)
+    if search_word:
+        search_results = data[data['text'].str.contains(search_word, case=False, na=False)]
+        if not search_results.empty:
+            st.subheader(f"Search results for '{search_word}' in 'text':")
+            st.dataframe(search_results, use_container_width=True)
+            st.write(f"Found {len(search_results)} matching job descriptions.")
+        else:
+            st.info(f"No job descriptions found containing '{search_word}'.")
 
-            if pd.api.types.is_numeric_dtype(data_to_display[selected_feature]):
-                st.subheader(f"Descriptive Statistics for `{selected_feature}`")
-                st.write(data_to_display[selected_feature].describe())
-            elif pd.api.types.is_string_dtype(data_to_display[selected_feature]) or pd.api.types.is_object_dtype(data_to_display[selected_feature]):
-                st.subheader(f"Value Counts for `{selected_feature}` (Top 20)")
-                st.write(data_to_display[selected_feature].value_counts().head(20))
-            else:
-                st.info("No specific descriptive statistics or value counts for this data type.")
-    else:
-        st.warning(f"The loaded DataFrame for '{FILENAME_TO_LOAD}' is empty.")
-else:
-    st.info(f"Could not load data for '{FILENAME_TO_LOAD}' from Kaggle.")
+    st.subheader('Feature Information')
+    feature_list = data.columns.tolist()
+    st.write(f'Total Features: **{len(feature_list)}**')
+    st.write('**Features:**')
+    st.code(str(feature_list))
+
+    st.subheader('Explore Feature Details')
+    selected_feature = st.selectbox('Select a Feature to see details:', [''] + feature_list)
+    if selected_feature:
+        st.write(f'**Feature:** `{selected_feature}`')
+        st.write(f'**Data Type:** `{data[selected_feature].dtype}`')
+        st.write(f'**Number of Unique Values:** `{data[selected_feature].nunique()}`')
+        st.write('**Sample Unique Values:**')
+        unique_values = data[selected_feature].unique()
+        if len(unique_values) > 20:
+            st.write(unique_values[:20])
+            st.caption(f'(Showing first 20 of {len(unique_values)} unique values)')
+        else:
+            st.write(unique_values)
+
+        if pd.api.types.is_numeric_dtype(data[selected_feature]):
+            st.subheader(f'Descriptive Statistics for `{selected_feature}`')
+            st.write(data[selected_feature].describe())
+            fig = px.histogram(data, x=selected_feature, title=f'Distribution of {selected_feature}')
+            st.plotly_chart(fig, use_container_width=True)
+        elif pd.api.types.is_string_dtype(data[selected_feature]) or pd.api.types.is_object_dtype(data[selected_feature]):
+            st.subheader(f'Value Counts for `{selected_feature}` (Top 20)')
+            st.write(data[selected_feature].value_counts().head(20))
+        else:
+            st.info('No specific descriptive statistics or value counts for this data type.')
 '''
 import streamlit as st
 import pandas as pd
