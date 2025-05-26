@@ -343,8 +343,8 @@ def preprocessing_page():
         st.info("Data not loaded. Please go to Home page first.")
 
 def tsdae_page():
-    st.header("TSDAE (Noise Injection)")
-    st.write("This page applies noise to the preprocessed text and generates combined embeddings for TSDAE.")
+    st.header("TSDAE (Sequential Noise Injection)")
+    st.write("This page applies noise to the preprocessed text using methods 'a', 'b', and 'c' sequentially.")
 
     if st.session_state['data'] is None or 'processed_text' not in st.session_state['data'].columns:
         st.warning("Please preprocess the data first by visiting the 'Preprocessing' page.")
@@ -355,41 +355,49 @@ def tsdae_page():
 
     if bert_model is not None:
         st.subheader("TSDAE Settings")
-        denoising_method = st.selectbox("Denoising Method", ['a', 'b', 'c'], index=0,
-                                         help="Method 'a': Random deletion. 'b': Remove high-frequency words. 'c': Based on 'b' + shuffle.")
         deletion_ratio = st.slider("Deletion Ratio", min_value=0.1, max_value=0.9, value=0.6, step=0.1)
+        freq_threshold = st.slider("High Frequency Threshold", min_value=10, max_value=500, value=100, step=10)
 
         word_freq_dict = None
-        if denoising_method in ['b', 'c']:
-            # Create a word frequency dictionary from the processed text
-            all_words = []
-            for text in data['processed_text'].fillna('').tolist():
-                all_words.extend(word_tokenize(text))
-            word_freq_dict = {word.lower(): all_words.count(word.lower()) for word in set(all_words)}
+        # Create a word frequency dictionary from the processed text
+        all_words = []
+        for text in data['processed_text'].fillna('').tolist():
+            all_words.extend(word_tokenize(text))
+        word_freq_dict = {word.lower(): all_words.count(word.lower()) for word in set(all_words)}
 
-        if st.button("Apply Noise and Generate TSDAE Embeddings"):
-            with st.spinner("Applying noise..."):
-                noisy_texts = [denoise_text(text, method=denoising_method, del_ratio=deletion_ratio, word_freq_dict=word_freq_dict)
-                               for text in tqdm(data['processed_text'].fillna('').tolist(), desc="Applying Noise")]
-                st.session_state['data']['noisy_text'] = noisy_texts
+        if st.button("Apply Sequential Noise and Generate Embeddings"):
+            noisy_text_stage_a = []
+            with st.spinner("Applying Random Deletion (Method 'a')..."):
+                for text in tqdm(data['processed_text'].fillna('').tolist(), desc="Applying Noise A"):
+                    noisy_text_stage_a.append(denoise_text(text, method='a', del_ratio=deletion_ratio))
+                st.session_state['data']['noisy_text_a'] = noisy_text_stage_a
 
-            st.subheader("Noisy Text (Preview)")
-            st.dataframe(st.session_state['data'][['processed_text', 'noisy_text']].head(), use_container_width=True)
+            noisy_text_stage_b = []
+            with st.spinner("Applying High-Frequency Word Removal (Method 'b')..."):
+                for text in tqdm(st.session_state['data']['noisy_text_a'], desc="Applying Noise B"):
+                    noisy_text_stage_b.append(denoise_text(text, method='b', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict, freq_threshold=freq_threshold))
+                st.session_state['data']['noisy_text_b'] = noisy_text_stage_b
 
-            st.subheader("Generating Embeddings for Original and Noisy Text")
-            original_embeddings = generate_embeddings_with_progress(bert_model, data['processed_text'].fillna('').tolist())
-            noisy_embeddings = generate_embeddings_with_progress(bert_model, st.session_state['data']['noisy_text'].tolist())
+            final_noisy_texts = []
+            with st.spinner("Applying High-Frequency Word Removal + Shuffle (Method 'c')..."):
+                for text in tqdm(st.session_state['data']['noisy_text_b'], desc="Applying Noise C"):
+                    final_noisy_texts.append(denoise_text(text, method='c', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict, freq_threshold=freq_threshold))
+                st.session_state['data']['final_noisy_text'] = final_noisy_texts
 
-            if original_embeddings.size > 0 and noisy_embeddings.size > 0:
-                # Combine embeddings (averaging as per your example)
-                tsdae_embeddings = (original_embeddings + noisy_embeddings) / 2.0
-                st.session_state['tsdae_embeddings'] = tsdae_embeddings
-                st.subheader("Combined TSDAE Embeddings (Preview)")
-                st.write("Shape of combined embeddings:", tsdae_embeddings.shape)
-                st.write("Preview of the first 3 combined embeddings:")
-                st.write(tsdae_embeddings[:3])
+            st.subheader("Sequentially Noisy Text (Preview)")
+            st.dataframe(st.session_state['data'][['processed_text', 'noisy_text_a', 'noisy_text_b', 'final_noisy_text']].head(), use_container_width=True)
+
+            st.subheader("Generating Embeddings for Final Noisy Text")
+            final_noisy_embeddings = generate_embeddings_with_progress(bert_model, st.session_state['data']['final_noisy_text'].tolist())
+
+            if final_noisy_embeddings.size > 0:
+                st.session_state['tsdae_embeddings'] = final_noisy_embeddings
+                st.subheader("Final TSDAE Embeddings (Preview)")
+                st.write("Shape of final TSDAE embeddings:", final_noisy_embeddings.shape)
+                st.write("Preview of the first 3 final TSDAE embeddings:")
+                st.write(final_noisy_embeddings[:3])
             else:
-                st.warning("Failed to generate embeddings for original or noisy text.")
+                st.warning("Failed to generate embeddings for the final noisy text.")
     else:
         st.warning("BERT model not loaded. Cannot proceed with TSDAE.")
 
