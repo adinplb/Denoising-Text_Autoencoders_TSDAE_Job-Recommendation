@@ -12,6 +12,7 @@ from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm  # Import tqdm for progress bar
+from sentence_transformers import SentenceTransformer # Import SentenceTransformer
 
 # Download necessary NLTK resources (run once)
 try:
@@ -64,11 +65,17 @@ def extract_text_from_docx(uploaded_file):
         return None
 
 # --- Text Preprocessing Function with Progress Bar ---
-def preprocess_text_with_progress(data):
+def preprocess_text_with_progress(data_df):
     processed_texts = []
-    if 'text' in data.columns:
-        with st.spinner("Preprocessing 'text' column..."):
-            for text in tqdm(data['text'].fillna(''), desc="Preprocessing"):
+    if 'text' in data_df.columns:
+        # Use st.spinner for the overall preprocessing operation
+        with st.spinner("Preprocessing 'text' column... This might take a moment."):
+            # Create a Streamlit progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+
+            total_rows = len(data_df)
+            for i, text in enumerate(data_df['text'].fillna('')):
                 if isinstance(text, str):
                     # Symbol Removal
                     text = text.translate(str.maketrans('', '', string.punctuation))
@@ -80,7 +87,7 @@ def preprocess_text_with_progress(data):
                     # Stopwords Removal
                     stop_words = set(stopwords.words('english'))
                     word_tokens = word_tokenize(text)
-                    filtered_words = [w for w in word_tokens if not w in stop_words]
+                    filtered_words = [w for w in word_tokens if w not in stop_words]
 
                     # Stemming
                     porter = PorterStemmer()
@@ -89,11 +96,66 @@ def preprocess_text_with_progress(data):
                     processed_texts.append(" ".join(stemmed_words))
                 else:
                     processed_texts.append("")
-        data['processed_text'] = processed_texts
-        st.success("Preprocessing of 'text' column complete!")
+
+                # Update progress bar
+                progress_bar.progress((i + 1) / total_rows)
+                status_text.text(f"Processed {i + 1}/{total_rows} entries.")
+
+            data_df['processed_text'] = processed_texts
+            st.success("Preprocessing of 'text' column complete!")
+            progress_bar.empty() # Clear progress bar
+            status_text.empty() # Clear status text
     else:
         st.warning("The 'text' column was not found in the dataset.")
-    return data
+    return data_df
+
+# --- Embedding Generation Functions ---
+@st.cache_resource
+def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for faster loading/embedding
+    """Loads the SentenceTransformer model (cached)."""
+    try:
+        model = SentenceTransformer(model_name)
+        return model
+    except Exception as e:
+        st.error(f"Error loading BERT model '{model_name}': {e}")
+        return None
+
+@st.cache_data
+def generate_embeddings_with_progress(_model, texts):
+    """
+    Generates embeddings for a list of texts using the provided model (cached).
+    Includes a Streamlit spinner.
+    _model argument is prefixed with underscore to prevent Streamlit hashing errors.
+    """
+    if _model is None:
+        st.error("BERT model is not loaded. Cannot generate embeddings.")
+        return np.array([])
+    try:
+        with st.spinner("Generating embeddings... This can take a few minutes."):
+            # Create a Streamlit progress bar for embedding
+            embedding_progress_bar = st.progress(0)
+            embedding_status_text = st.empty()
+
+            embeddings = []
+            total_texts = len(texts)
+            batch_size = 32 # Adjust based on your model and memory
+            for i in range(0, total_texts, batch_size):
+                batch_texts = texts[i:i + batch_size]
+                batch_embeddings = _model.encode(batch_texts, convert_to_tensor=True)
+                embeddings.extend(batch_embeddings.cpu().numpy())
+
+                # Update progress bar
+                progress_val = (i + len(batch_texts)) / total_texts
+                embedding_progress_bar.progress(progress_val)
+                embedding_status_text.text(f"Generated embeddings for {i + len(batch_texts)}/{total_texts} entries.")
+
+            st.success("Embedding generation complete!")
+            embedding_progress_bar.empty()
+            embedding_status_text.empty()
+            return np.array(embeddings)
+    except Exception as e:
+        st.error(f"Error generating embeddings: {e}")
+        return np.array([])
 
 # --- Main Dashboard ---
 st.title('Exploratory Data Analysis of Job Data')
@@ -127,6 +189,30 @@ if data is not None:
     if 'processed_text' in data.columns:
         st.subheader("Processed 'text' column (Preview)")
         st.dataframe(data[['text', 'processed_text']].head(), use_container_width=True)
+
+        # --- Generate Embeddings for 'processed_text' column ---
+        st.subheader("Generating Embeddings for 'processed_text' column")
+        bert_model = load_bert_model()
+        job_text_embeddings = None
+
+        if bert_model is not None:
+            texts_to_embed = data['processed_text'].fillna('').tolist()
+            if texts_to_embed:
+                job_text_embeddings = generate_embeddings_with_progress(bert_model, texts_to_embed)
+                if job_text_embeddings.size > 0:
+                    st.write("Embeddings generated successfully!")
+                    st.subheader("Embeddings (Matrix Preview)")
+                    st.write("Shape of the embedding matrix:", job_text_embeddings.shape)
+                    st.write("Preview of the first 3 embeddings:")
+                    st.write(job_text_embeddings[:3])
+                    st.info(f"Each processed job description is now represented by a vector of {job_text_embeddings.shape[1]} dimensions.")
+                else:
+                    st.warning("No embeddings generated. 'processed_text' column might be empty.")
+            else:
+                st.warning("No text found in 'processed_text' column to generate embeddings.")
+        else:
+            st.warning("BERT model not loaded. Cannot generate embeddings.")
+
 
     st.subheader('Search for a Word in a Feature')
     search_word = st.text_input("Enter a word to search:")
