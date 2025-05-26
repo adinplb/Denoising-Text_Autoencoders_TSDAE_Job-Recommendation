@@ -14,14 +14,13 @@ KAGGLE_FILENAMES = [
 ]
 # Common encodings to try if utf-8 fails
 COMMON_ENCODINGS = ['utf-8', 'latin-1', 'cp1252']
-COMMON_DELIMITERS = [',', ';', '\t']
 
 # --- Function to Load Data from Kaggle ---
 @st.cache_data(show_spinner="Downloading and loading data from Kaggle...")
 def load_data_from_kaggle(dataset_path, filename):
     """
     Authenticates with Kaggle API, downloads a specified file from a dataset,
-    and attempts to read it into a pandas DataFrame, trying common encodings and delimiters.
+    and attempts to read it into a pandas DataFrame, trying common encodings and handling bad lines.
     """
     try:
         # Set Kaggle API credentials from Streamlit Secrets as environment variables
@@ -46,29 +45,29 @@ def load_data_from_kaggle(dataset_path, filename):
         else:
             st.info(f"Using cached file for '{filename}'.")
 
-        # Attempt to read the CSV with multiple encodings and delimiters
+        # Attempt to read the CSV with multiple encodings and handle bad lines
         df = None
         for encoding in COMMON_ENCODINGS:
-            for delimiter in COMMON_DELIMITERS:
-                try:
-                    df = pd.read_csv(filepath, encoding=encoding, sep=delimiter, error_bad_lines=False, warn_bad_lines=True)
-                    st.success(f"Successfully loaded '{filename}' with encoding: {encoding} and delimiter: '{delimiter}'")
-                    return df
-                except pd.errors.ParserError as e_parser:
-                    st.warning(f"ParserError with '{filename}', encoding: {encoding}, delimiter: '{delimiter}': {e_parser}")
-                    continue # Try the next delimiter
-                except UnicodeDecodeError:
-                    st.warning(f"UnicodeDecodeError with '{filename}', encoding: {encoding}.")
-                    break # Move to the next encoding
-                except Exception as e_read:
-                    st.error(f"Error reading file '{filename}' with encoding: {encoding} and delimiter: '{delimiter}': {e_read}")
-                    return None # Other reading errors are fatal
+            try:
+                # Try with default separator (comma) and skipping bad lines
+                df = pd.read_csv(filepath, encoding=encoding, sep=',', on_bad_lines='skip', warn_bad_lines=True)
+                st.success(f"Successfully loaded '{filename}' with encoding: {encoding} (skipped bad lines)")
+                return df
+            except pd.errors.ParserError as e_parser:
+                st.warning(f"ParserError with '{filename}', encoding: {encoding} (skipping bad lines): {e_parser}")
+                continue # Try the next encoding
+            except UnicodeDecodeError:
+                st.warning(f"UnicodeDecodeError with '{filename}', encoding: {encoding}.")
+                break # Move to the next encoding
+            except Exception as e_read:
+                st.error(f"Error reading file '{filename}' with encoding: {encoding}: {e_read}")
+                return None # Other reading errors are fatal
 
-            if df is not None: # If successfully loaded with any delimiter, break the encoding loop
+            if df is not None:
                 break
 
-        # If loop finishes, no encoding/delimiter combination worked
-        st.error(f"Failed to load '{filename}' with all attempted encodings and delimiters.")
+        # If loop finishes, no encoding worked
+        st.error(f"Failed to load '{filename}' after trying multiple encodings and skipping bad lines.")
         return None
 
     except KeyError:
