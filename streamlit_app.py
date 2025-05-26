@@ -11,6 +11,7 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
+from tqdm import tqdm  # Import tqdm for progress bar
 
 # Download necessary NLTK resources (run once)
 try:
@@ -21,6 +22,10 @@ try:
     word_tokenize("example")
 except LookupError:
     nltk.download('punkt')
+try:
+    nltk.data.find('tokenizers/punkt/PY3/punkt_tab.pickle')
+except LookupError:
+    nltk.download('punkt_tab')
 
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
@@ -58,27 +63,37 @@ def extract_text_from_docx(uploaded_file):
         st.error(f"Error extracting text from DOCX: {e}")
         return None
 
-# --- Text Preprocessing Function ---
-def preprocess_text(text):
-    if isinstance(text, str):
-        # Symbol Removal
-        text = text.translate(str.maketrans('', '', string.punctuation))
-        text = re.sub(r'[^\w\s]', '', text)
+# --- Text Preprocessing Function with Progress Bar ---
+def preprocess_text_with_progress(data):
+    processed_texts = []
+    if 'text' in data.columns:
+        with st.spinner("Preprocessing 'text' column..."):
+            for text in tqdm(data['text'].fillna(''), desc="Preprocessing"):
+                if isinstance(text, str):
+                    # Symbol Removal
+                    text = text.translate(str.maketrans('', '', string.punctuation))
+                    text = re.sub(r'[^\w\s]', '', text)
 
-        # Case Folding
-        text = text.lower()
+                    # Case Folding
+                    text = text.lower()
 
-        # Stopwords Removal
-        stop_words = set(stopwords.words('english'))
-        word_tokens = word_tokenize(text)
-        filtered_words = [w for w in word_tokens if not w in stop_words]
+                    # Stopwords Removal
+                    stop_words = set(stopwords.words('english'))
+                    word_tokens = word_tokenize(text)
+                    filtered_words = [w for w in word_tokens if not w in stop_words]
 
-        # Stemming
-        porter = PorterStemmer()
-        stemmed_words = [porter.stem(w) for w in filtered_words]
+                    # Stemming
+                    porter = PorterStemmer()
+                    stemmed_words = [porter.stem(w) for w in filtered_words]
 
-        return " ".join(stemmed_words)
-    return ""
+                    processed_texts.append(" ".join(stemmed_words))
+                else:
+                    processed_texts.append("")
+        data['processed_text'] = processed_texts
+        st.success("Preprocessing of 'text' column complete!")
+    else:
+        st.warning("The 'text' column was not found in the dataset.")
+    return data
 
 # --- Main Dashboard ---
 st.title('Exploratory Data Analysis of Job Data')
@@ -106,14 +121,12 @@ if data is not None:
     st.subheader('Data Preview')
     st.dataframe(data.head(), use_container_width=True)
 
-    # --- Preprocess 'text' column ---
-    st.subheader("Preprocessing 'text' column")
-    if 'text' in data.columns:
-        data['processed_text'] = data['text'].apply(preprocess_text)
+    # --- Preprocess 'text' column with progress bar ---
+    data = preprocess_text_with_progress(data)
+
+    if 'processed_text' in data.columns:
         st.subheader("Processed 'text' column (Preview)")
         st.dataframe(data[['text', 'processed_text']].head(), use_container_width=True)
-    else:
-        st.warning("The 'text' column was not found in the dataset.")
 
     st.subheader('Search for a Word in a Feature')
     search_word = st.text_input("Enter a word to search:")
