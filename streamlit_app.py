@@ -644,17 +644,18 @@ def annotation_page():
                 with cols[i]:
                     # Numerical input (Relevant/Not Relevant)
                     relevance = st.radio(
-                        f"{annotator} - Relevant?",
-                        options=["Relevant", "Not Relevant"],
+                        f"{annotator} - Relevance Score:", # Changed label
+                        options=[0, 1, 2, 3], # Changed options
+                        index=0, # Default to 0
                         key=f"relevance_{cv_filename}_{row['Job.ID']}_{annotator}"
                     )
-                    annotation_row_data[f'annotator_{i+1}_relevance'] = 1 if relevance == "Relevant" else 0
+                    annotation_row_data[f'annotator_{i+1}_relevance'] = relevance # Store numerical value
                     
                     # Qualitative input (Text area)
                     qualitative_feedback = st.text_area(
                         f"{annotator} - Feedback",
                         key=f"feedback_{cv_filename}_{row['Job.ID']}_{annotator}",
-                        height=68 # Changed height from 50 to 68
+                        height=68
                     )
                     annotation_row_data[f'annotator_{i+1}_feedback'] = qualitative_feedback
             
