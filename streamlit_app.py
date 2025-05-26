@@ -1,157 +1,85 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.preprocessing import normalize
-import plotly.express as px
-from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
-from pdfminer.high_level import extract_text as pdf_extract_text
-from docx import Document as DocxDocument
-import umap  # Import UMAP
+from kaggle.api.kaggle_api_extended import KaggleApi
+import os
 
 # --- Constants ---
-JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
-N_CLUSTERS = 20
+KAGGLE_DATASET_PATH = "kandij/job-recommendation-datasets"
+KAGGLE_FILENAMES = [
+    "Combined_Jobs_Final.csv",
+    "Experience.csv",
+    "Job_Views.csv",
+    "Positions_Of_Interest.csv",
+    "job_data.csv"
+]
 
-# --- Data Loading ---
+# --- Function to Load Data from Kaggle ---
 @st.cache_data
-def load_job_data(url):
+def load_data_from_kaggle(dataset_path, filename):
+    api = KaggleApi()
+    api.authenticate(st.secrets["kaggle"]["username"], st.secrets["kaggle"]["key"])
+
+    # Create a directory to store the data if it doesn't exist
+    if not os.path.exists("data"):
+        os.makedirs("data")
+
+    # Download the specific file from the dataset
     try:
-        df = pd.read_csv(url)
-        if 'text' in df.columns and 'Title' in df.columns:
-            return df[['Job.ID', 'text', 'Title']].rename(columns={'text': 'description', 'Title': 'title'})
+        api.dataset_download_file(dataset_path, filename, path="data/", force=False)
+        filepath = os.path.join("data", filename)
+        if os.path.exists(filepath):
+            try:
+                df = pd.read_csv(filepath)
+                return df
+            except Exception as e_read:
+                st.error(f"Error reading file '{filename}': {e_read}")
+                return None
         else:
-            st.error("Error: 'text' and 'Title' columns not found in the job data.")
+            st.error(f"Error: File '{filename}' not found after downloading.")
             return None
-    except Exception as e:
-        st.error(f"Error loading data from {url}: {e}")
+    except Exception as e_download:
+        st.error(f"Error downloading data from Kaggle: {e_download}")
         return None
-
-job_df = load_job_data(JOB_DATA_URL)
-
-# --- Sidebar ---
-with st.sidebar:
-    st.header("Upload Your CV")
-    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
-    cv_text = ""
-    if uploaded_cv:
-        try:
-            file_extension = uploaded_cv.name.split(".")[-1].lower()
-            if file_extension == "pdf":
-                cv_text = pdf_extract_text(uploaded_file)
-            elif file_extension == "docx":
-                doc = DocxDocument(uploaded_file)
-                cv_text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-            st.success("CV uploaded successfully!")
-        except Exception as e:
-            st.error(f"Error reading CV file: {e}")
-
-    st.header("Visualization Settings")
-    visualization_type = st.selectbox("Visualization Type", ["2D", "3D", "UMAP", "PCA"], index=1)
 
 # --- Main Dashboard ---
-st.title("Clustered Job Posting Embedding Visualization")
+st.title("Kaggle Dataset Explorer")
 
-if job_df is not None:
-    st.subheader("Job Data Preview")
-    st.dataframe(job_df.head())
+st.subheader("Select a CSV File to Explore")
+selected_filename = st.selectbox("Choose a CSV file:", KAGGLE_FILENAMES)
 
-    # --- Embedding Generation ---
-    @st.cache_resource
-    def load_bert_model(model_name="all-mpnet-base-v2"):
-        model = SentenceTransformer(model_name)
-        return model
+if selected_filename:
+    data = load_data_from_kaggle(KAGGLE_DATASET_PATH, selected_filename)
+    if data is not None:
+        st.subheader(f"Data: {selected_filename}")
+        st.dataframe(data)
 
-    @st.cache_data
-    def generate_job_embeddings(_model, df):
-        if df is not None and 'description' in df.columns:
-            job_descriptions = df['description'].fillna('').tolist()
-            embeddings = _model.encode(job_descriptions, convert_to_tensor=True).cpu().numpy()
-            normalized_embeddings = normalize(embeddings)
-            return normalized_embeddings
-        return None
+        st.subheader("Information about Features")
+        if not data.empty:
+            feature_list = data.columns.tolist()
+            st.write(f"Total Features: {len(feature_list)}")
+            st.write("Features:")
+            st.write(feature_list)
 
-    bert_model = load_bert_model()
-    job_embeddings = generate_job_embeddings(bert_model, job_df)
-    cv_embedding = None
-    normalized_cv_embedding = None
-
-    if cv_text and bert_model is not None:
-        cv_embedding = bert_model.encode([cv_text], convert_to_tensor=True).cpu().numpy()
-        normalized_cv_embedding = normalize(cv_embedding)
-        st.subheader("Uploaded CV Content (Preview)")
-        st.text_area("CV Text", cv_text, height=300)
-
-    if job_embeddings is not None:
-        st.subheader(f"{visualization_type} Visualization of Clustered Job Postings (K={N_CLUSTERS})")
-
-        # --- K-Means Clustering ---
-        @st.cache_data
-        def cluster_job_embeddings(embeddings, n_clusters):
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-            clusters = kmeans.fit_predict(embeddings)
-            return clusters
-
-        job_clusters = cluster_job_embeddings(job_embeddings, N_CLUSTERS)
-
-        # --- Dimensionality Reduction and Visualization ---
-        if visualization_type == "UMAP":
-            reducer = umap.UMAP(n_components=3 if visualization_type == "3D" else 2, random_state=42)
-            reduced_embeddings = reducer.fit_transform(job_embeddings)
-            n_components = reduced_embeddings.shape[1]
-            plot_df = pd.DataFrame(reduced_embeddings, columns=[f'UMAP{i+1}' for i in range(n_components)])
-            plot_df['title'] = job_df['title'].tolist()
-            plot_df['description'] = job_df['description'].tolist()
-            plot_df['cluster'] = job_clusters.astype(str)
-
-            if n_components == 3:
-                fig = px.scatter_3d(plot_df, x='UMAP1', y='UMAP2', z='UMAP3', color='cluster',
-                                    hover_name='title', hover_data={'description': True, 'cluster': True},
-                                    title=f'UMAP 3D Visualization (K={N_CLUSTERS})', width=800, height=700)
-                st.plotly_chart(fig)
-            else:
-                fig = px.scatter(plot_df, x='UMAP1', y='UMAP2', color='cluster',
-                                 hover_name='title', hover_data={'description': True, 'cluster': True},
-                                 title=f'UMAP 2D Visualization (K={N_CLUSTERS})', width=800, height=700)
-                st.plotly_chart(fig)
-
-        elif visualization_type == "PCA":
-            reducer = PCA(n_components=3 if visualization_type == "3D" else 2)
-            reduced_embeddings = reducer.fit_transform(job_embeddings)
-            n_components = reduced_embeddings.shape[1]
-            plot_df = pd.DataFrame(reduced_embeddings, columns=[f'PC{i+1}' for i in range(n_components)])
-            plot_df['title'] = job_df['title'].tolist()
-            plot_df['description'] = job_df['description'].tolist()
-            plot_df['cluster'] = job_clusters.astype(str)
-
-            if n_components == 3:
-                fig = px.scatter_3d(plot_df, x='PC1', y='PC2', z='PC3', color='cluster',
-                                    hover_name='title', hover_data={'description': True, 'cluster': True},
-                                    title=f'PCA 3D Visualization (K={N_CLUSTERS})', width=800, height=700)
-                st.plotly_chart(fig)
-            else:
-                fig = px.scatter(plot_df, x='PC1', y='PC2', color='cluster',
-                                 hover_name='title', hover_data={'description': True, 'cluster': True},
-                                 title=f'PCA 2D Visualization (K={N_CLUSTERS})', width=800, height=700)
-                st.plotly_chart(fig)
-
-        elif visualization_type == "3D": # Basic 3D (using first 3 dimensions of embeddings)
-            plot_df = pd.DataFrame(job_embeddings[:, :3], columns=['x', 'y', 'z'])
-            plot_df['title'] = job_df['title'].tolist()
-            plot_df['description'] = job_df['description'].tolist()
-            plot_df['cluster'] = job_clusters.astype(str)
-            fig = px.scatter_3d(plot_df, x='x', y='y', z='z', color='cluster',
-                                hover_name='title', hover_data={'description': True, 'cluster': True},
-                                title=f'Basic 3D Embedding Visualization (K={N_CLUSTERS})', width=800, height=700)
-            st.plotly_chart(fig)
-
-        elif visualization_type == "2D": # Basic 2D (using first 2 dimensions of embeddings)
-            plot_df = pd.DataFrame(job_embeddings[:, :2], columns=['x', 'y'])
-            plot_df['title'] = job_df['title'].tolist()
-            plot_df['description'] = job_df['description'].tolist()
-
-
+            st.subheader("Explore Feature Details")
+            selected_feature = st.selectbox("Select a Feature to see details:", [""] + feature_list)
+            if selected_feature:
+                st.write(f"**Feature:** `{selected_feature}`")
+                st.write(f"**Data Type:** `{data[selected_feature].dtype}`")
+                st.write(f"**Number of Unique Values:** `{data[selected_feature].nunique()}`")
+                st.write("**First 20 Unique Values:**")
+                st.write(data[selected_feature].unique()[:20])
+                if data[selected_feature].dtype in ['int64', 'float64']:
+                    st.subheader(f"Descriptive Statistics for `{selected_feature}`")
+                    st.write(data[selected_feature].describe())
+                elif data[selected_feature].dtype == 'object':
+                    st.subheader(f"Value Counts for `{selected_feature}` (Top 20)")
+                    st.write(data[selected_feature].value_counts().head(20))
+        else:
+            st.warning("The selected DataFrame is empty.")
+    else:
+        st.info(f"Could not load data from {selected_filename}.")
+else:
+    st.info("Please select a CSV file to explore.")
 
 '''
 import streamlit as st
