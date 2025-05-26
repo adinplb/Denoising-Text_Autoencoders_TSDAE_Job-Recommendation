@@ -6,9 +6,10 @@ import os
 # --- Function to Load Data from Kaggle ---
 @st.cache_data
 def load_data_from_kaggle(dataset_path, filename):
+    os.environ['KAGGLE_USERNAME'] = st.secrets["kaggle"]["username"]
+    os.environ['KAGGLE_KEY'] = st.secrets["kaggle"]["key"]
     api = KaggleApi()
-    # Authenticate using username and key from Streamlit Secrets
-    api.authenticate(st.secrets["kaggle"]["username"], st.secrets["kaggle"]["key"])
+    api.authenticate()  # Call authenticate without arguments
 
     # Create a directory to store the data if it doesn't exist
     if not os.path.exists("data"):
