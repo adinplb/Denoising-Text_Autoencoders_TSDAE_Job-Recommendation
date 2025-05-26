@@ -5,7 +5,22 @@ import plotly.express as px
 import os
 from pdfminer.high_level import extract_text as pdf_extract_text
 from docx import Document as DocxDocument
-from sentence_transformers import SentenceTransformer
+import re
+import string
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer
+import nltk
+
+# Download necessary NLTK resources (run once)
+try:
+    stopwords.words('english')
+except LookupError:
+    nltk.download('stopwords')
+try:
+    word_tokenize("example")
+except LookupError:
+    nltk.download('punkt')
 
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
@@ -17,7 +32,7 @@ def load_data_from_url(url):
     try:
         df = pd.read_csv(url)
         st.success('Successfully loaded data!')
-        return df[RELEVANT_FEATURES]  # Select only the relevant features
+        return df[RELEVANT_FEATURES].copy()  # Select and create a copy to avoid SettingWithCopyWarning
     except Exception as e:
         st.error(f'Error loading data from URL: {e}')
         return None
@@ -43,32 +58,27 @@ def extract_text_from_docx(uploaded_file):
         st.error(f"Error extracting text from DOCX: {e}")
         return None
 
-# --- Embedding Generation Functions ---
-@st.cache_resource
-def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for faster loading/embedding
-    """Loads the SentenceTransformer model (cached)."""
-    try:
-        model = SentenceTransformer(model_name)
-        return model
-    except Exception as e:
-        st.error(f"Error loading BERT model '{model_name}': {e}")
-        return None
+# --- Text Preprocessing Function ---
+def preprocess_text(text):
+    if isinstance(text, str):
+        # Symbol Removal
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        text = re.sub(r'[^\w\s]', '', text)
 
-@st.cache_data
-def generate_embeddings(_model, texts):
-    """
-    Generates embeddings for a list of texts using the provided model (cached).
-    _model argument is prefixed with underscore to prevent Streamlit hashing errors.
-    """
-    if _model is None:
-        st.error("BERT model is not loaded. Cannot generate embeddings.")
-        return np.array([])
-    try:
-        embeddings = _model.encode(texts, convert_to_tensor=True)
-        return embeddings.cpu().numpy()
-    except Exception as e:
-        st.error(f"Error generating embeddings: {e}")
-        return np.array([])
+        # Case Folding
+        text = text.lower()
+
+        # Stopwords Removal
+        stop_words = set(stopwords.words('english'))
+        word_tokens = word_tokenize(text)
+        filtered_words = [w for w in word_tokens if not w in stop_words]
+
+        # Stemming
+        porter = PorterStemmer()
+        stemmed_words = [porter.stem(w) for w in filtered_words]
+
+        return " ".join(stemmed_words)
+    return ""
 
 # --- Main Dashboard ---
 st.title('Exploratory Data Analysis of Job Data')
@@ -96,29 +106,14 @@ if data is not None:
     st.subheader('Data Preview')
     st.dataframe(data.head(), use_container_width=True)
 
-    # --- Generate Embeddings for 'text' column ---
-    st.subheader("Generating Embeddings for 'text' column")
-    bert_model = load_bert_model()
-    job_text_embeddings = None
-
-    if bert_model is not None and 'text' in data.columns:
-        # Filter out NaN values before sending to model
-        texts_to_embed = data['text'].fillna('').tolist()
-        if texts_to_embed:
-            job_text_embeddings = generate_embeddings(bert_model, texts_to_embed)
-            if job_text_embeddings.size > 0:
-                st.write("Embeddings generated successfully!")
-                st.subheader("Embeddings (Matrix Preview)")
-                st.write("Shape of the embedding matrix:", job_text_embeddings.shape)
-                st.write("Preview of the first 3 embeddings:")
-                st.write(job_text_embeddings[:3])
-                st.info(f"Each job description is now represented by a vector of {job_text_embeddings.shape[1]} dimensions.")
-            else:
-                st.warning("No embeddings generated. 'text' column might be empty.")
-        else:
-            st.warning("No text found in 'text' column to generate embeddings.")
+    # --- Preprocess 'text' column ---
+    st.subheader("Preprocessing 'text' column")
+    if 'text' in data.columns:
+        data['processed_text'] = data['text'].apply(preprocess_text)
+        st.subheader("Processed 'text' column (Preview)")
+        st.dataframe(data[['text', 'processed_text']].head(), use_container_width=True)
     else:
-        st.warning("BERT model not loaded or 'text' column missing. Cannot generate embeddings.")
+        st.warning("The 'text' column was not found in the dataset.")
 
     st.subheader('Search for a Word in a Feature')
     search_word = st.text_input("Enter a word to search:")
@@ -161,7 +156,11 @@ if data is not None:
             st.write(data[selected_feature].describe())
             fig = px.histogram(data, x=selected_feature, title=f'Distribution of {selected_feature}')
             st.plotly_chart(fig, use_container_width=True)
-        elif pd.api.types.is_string_dtype(
+        elif pd.api.types.is_string_dtype(data[selected_feature]) or pd.api.types.is_object_dtype(data[selected_feature]):
+            st.subheader(f'Value Counts for `{selected_feature}` (Top 20)')
+            st.write(data[selected_feature].value_counts().head(20))
+        else:
+            st.info('No specific descriptive statistics or value counts for this data type.')
 '''
 import streamlit as st
 import pandas as pd
