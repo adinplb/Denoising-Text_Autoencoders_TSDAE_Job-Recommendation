@@ -28,17 +28,21 @@ if data is not None:
     st.subheader('Data Preview')
     st.dataframe(data.head(), use_container_width=True)
 
-    st.subheader('Search for a Word')
-    search_word = st.text_input("Enter a word to search in the 'text' column:")
+    st.subheader('Search for a Word in a Feature')
+    search_word = st.text_input("Enter a word to search:")
+    search_column = st.selectbox("Select the feature to search in:", [''] + data.columns.tolist())
 
-    if search_word:
-        search_results = data[data['text'].str.contains(search_word, case=False, na=False)]
-        if not search_results.empty:
-            st.subheader(f"Search results for '{search_word}' in 'text':")
-            st.dataframe(search_results, use_container_width=True)
-            st.write(f"Found {len(search_results)} matching job descriptions.")
+    if search_word and search_column:
+        if search_column in data.columns:
+            search_results = data[data[search_column].astype(str).str.contains(search_word, case=False, na=False)]
+            if not search_results.empty:
+                st.subheader(f"Search results for '{search_word}' in '{search_column}':")
+                st.dataframe(search_results, use_container_width=True)
+                st.write(f"Found {len(search_results)} matching entries in '{search_column}'.")
+            else:
+                st.info(f"No entries found in '{search_column}' containing '{search_word}'.")
         else:
-            st.info(f"No job descriptions found containing '{search_word}'.")
+            st.error(f"Error: Column '{search_column}' not found in the data.")
 
     st.subheader('Feature Information')
     feature_list = data.columns.tolist()
