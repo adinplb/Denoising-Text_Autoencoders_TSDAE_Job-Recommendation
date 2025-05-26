@@ -112,7 +112,6 @@ if normalized_cv_embedding is not None and normalized_job_embeddings is not None
     st.write(f"Maximum Similarity: {max_similarity:.4f}")
     st.write(f"Minimum Similarity: {min_similarity:.4f}")
 '''
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -161,16 +160,16 @@ if job_df is not None:
         return model
 
     @st.cache_data
-    def generate_job_embeddings(df, model):
+    def generate_job_embeddings(_model, df):
         if df is not None and 'description' in df.columns:
             job_descriptions = df['description'].fillna('').tolist()
-            embeddings = model.encode(job_descriptions, convert_to_tensor=True).cpu().numpy()
+            embeddings = _model.encode(job_descriptions, convert_to_tensor=True).cpu().numpy()
             normalized_embeddings = normalize(embeddings)
             return normalized_embeddings
         return None
 
     bert_model = load_bert_model()
-    job_embeddings = generate_job_embeddings(job_df, bert_model)
+    job_embeddings = generate_job_embeddings(bert_model, job_df)
 
     if job_embeddings is not None:
         st.subheader("Job Posting Embeddings (Normalized - Preview)")
@@ -200,5 +199,4 @@ if job_df is not None:
 
 else:
     st.info("Job data not loaded. Please ensure the URL is correct.")
-
 
