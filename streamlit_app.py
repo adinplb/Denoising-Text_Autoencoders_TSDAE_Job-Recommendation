@@ -12,7 +12,8 @@ from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm  # Import tqdm for progress bar
-from sentence_transformers import SentenceTransformer # Import SentenceTransformer
+from sentence_transformers import SentenceTransformer, util # Import SentenceTransformer
+from sklearn.cluster import KMeans
 
 # Download necessary NLTK resources (run once)
 try:
@@ -31,6 +32,7 @@ except LookupError:
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
 RELEVANT_FEATURES = ['Job.ID', 'text', 'Title']
+N_CLUSTERS = 20
 
 # --- Function to Load Data from URL ---
 @st.cache_data(show_spinner='Loading data...')
@@ -38,7 +40,7 @@ def load_data_from_url(url):
     try:
         df = pd.read_csv(url)
         st.success('Successfully loaded data!')
-        return df[RELEVANT_FEATURES].copy()  # Select and create a copy to avoid SettingWithCopyWarning
+        return df[RELEVANT_FEATURES].copy()  # Select only the relevant features and create a copy
     except Exception as e:
         st.error(f'Error loading data from URL: {e}')
         return None
@@ -68,43 +70,26 @@ def extract_text_from_docx(uploaded_file):
 def preprocess_text_with_progress(data_df):
     processed_texts = []
     if 'text' in data_df.columns:
-        # Use st.spinner for the overall preprocessing operation
         with st.spinner("Preprocessing 'text' column... This might take a moment."):
-            # Create a Streamlit progress bar
             progress_bar = st.progress(0)
             status_text = st.empty()
-
             total_rows = len(data_df)
             for i, text in enumerate(data_df['text'].fillna('')):
                 if isinstance(text, str):
-                    # Symbol Removal
                     text = text.translate(str.maketrans('', '', string.punctuation))
-                    text = re.sub(r'[^\w\s]', '', text)
-
-                    # Case Folding
-                    text = text.lower()
-
-                    # Stopwords Removal
+                    text = re.sub(r'[^\w\s]', '', text).lower()
                     stop_words = set(stopwords.words('english'))
                     word_tokens = word_tokenize(text)
-                    filtered_words = [w for w in word_tokens if w not in stop_words]
-
-                    # Stemming
-                    porter = PorterStemmer()
-                    stemmed_words = [porter.stem(w) for w in filtered_words]
-
-                    processed_texts.append(" ".join(stemmed_words))
+                    filtered_words = [PorterStemmer().stem(w) for w in word_tokens if w not in stop_words]
+                    processed_texts.append(" ".join(filtered_words))
                 else:
                     processed_texts.append("")
-
-                # Update progress bar
                 progress_bar.progress((i + 1) / total_rows)
                 status_text.text(f"Processed {i + 1}/{total_rows} entries.")
-
             data_df['processed_text'] = processed_texts
             st.success("Preprocessing of 'text' column complete!")
-            progress_bar.empty() # Clear progress bar
-            status_text.empty() # Clear status text
+            progress_bar.empty()
+            status_text.empty()
     else:
         st.warning("The 'text' column was not found in the dataset.")
     return data_df
@@ -124,7 +109,7 @@ def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for 
 def generate_embeddings_with_progress(_model, texts):
     """
     Generates embeddings for a list of texts using the provided model (cached).
-    Includes a Streamlit spinner.
+    Includes a Streamlit spinner and a progress bar.
     _model argument is prefixed with underscore to prevent Streamlit hashing errors.
     """
     if _model is None:
@@ -132,10 +117,8 @@ def generate_embeddings_with_progress(_model, texts):
         return np.array([])
     try:
         with st.spinner("Generating embeddings... This can take a few minutes."):
-            # Create a Streamlit progress bar for embedding
             embedding_progress_bar = st.progress(0)
             embedding_status_text = st.empty()
-
             embeddings = []
             total_texts = len(texts)
             batch_size = 32 # Adjust based on your model and memory
@@ -143,12 +126,9 @@ def generate_embeddings_with_progress(_model, texts):
                 batch_texts = texts[i:i + batch_size]
                 batch_embeddings = _model.encode(batch_texts, convert_to_tensor=True)
                 embeddings.extend(batch_embeddings.cpu().numpy())
-
-                # Update progress bar
                 progress_val = (i + len(batch_texts)) / total_texts
                 embedding_progress_bar.progress(progress_val)
                 embedding_status_text.text(f"Generated embeddings for {i + len(batch_texts)}/{total_texts} entries.")
-
             st.success("Embedding generation complete!")
             embedding_progress_bar.empty()
             embedding_status_text.empty()
@@ -186,80 +166,23 @@ if data is not None:
     # --- Preprocess 'text' column with progress bar ---
     data = preprocess_text_with_progress(data)
 
-    if 'processed_text' in data.columns:
-        st.subheader("Processed 'text' column (Preview)")
-        st.dataframe(data[['text', 'processed_text']].head(), use_container_width=True)
+    # --- Generate Embeddings for 'processed_text' column ---
+    st.subheader("Generating Embeddings for 'processed_text' column")
+    bert_model = load_bert_model()
+    job_text_embeddings = None
 
-        # --- Generate Embeddings for 'processed_text' column ---
-        st.subheader("Generating Embeddings for 'processed_text' column")
-        bert_model = load_bert_model()
-        job_text_embeddings = None
+    if bert_model is not None and 'processed_text' in data.columns:
+        texts_to_embed = data['processed_text'].fillna('').tolist()
+        if texts_to_embed:
+            job_text_embeddings = generate_embeddings_with_progress(bert_model, texts_to_embed)
 
-        if bert_model is not None:
-            texts_to_embed = data['processed_text'].fillna('').tolist()
-            if texts_to_embed:
-                job_text_embeddings = generate_embeddings_with_progress(bert_model, texts_to_embed)
-                if job_text_embeddings.size > 0:
-                    st.write("Embeddings generated successfully!")
-                    st.subheader("Embeddings (Matrix Preview)")
-                    st.write("Shape of the embedding matrix:", job_text_embeddings.shape)
-                    st.write("Preview of the first 3 embeddings:")
-                    st.write(job_text_embeddings[:3])
-                    st.info(f"Each processed job description is now represented by a vector of {job_text_embeddings.shape[1]} dimensions.")
-                else:
-                    st.warning("No embeddings generated. 'processed_text' column might be empty.")
-            else:
-                st.warning("No text found in 'processed_text' column to generate embeddings.")
-        else:
-            st.warning("BERT model not loaded. Cannot generate embeddings.")
-
-
-    st.subheader('Search for a Word in a Feature')
-    search_word = st.text_input("Enter a word to search:")
-    search_column = st.selectbox("Select the feature to search in:", [''] + data.columns.tolist())
-
-    if search_word and search_column:
-        if search_column in data.columns:
-            search_results = data[data[search_column].astype(str).str.contains(search_word, case=False, na=False)]
-            if not search_results.empty:
-                st.subheader(f"Search results for '{search_word}' in '{search_column}':")
-                st.dataframe(search_results, use_container_width=True)
-                st.write(f"Found {len(search_results)} matching entries in '{search_column}'.")
-            else:
-                st.info(f"No entries found in '{search_column}' containing '{search_word}'.")
-        else:
-            st.error(f"Error: Column '{search_column}' not found in the data.")
-
-    st.subheader('Feature Information')
-    feature_list = data.columns.tolist()
-    st.write(f'Total Features: **{len(feature_list)}**')
-    st.write('**Features:**')
-    st.code(str(feature_list))
-
-    st.subheader('Explore Feature Details')
-    selected_feature = st.selectbox('Select a Feature to see details:', [''] + feature_list)
-    if selected_feature:
-        st.write(f'**Feature:** `{selected_feature}`')
-        st.write(f'**Data Type:** `{data[selected_feature].dtype}`')
-        st.write(f'**Number of Unique Values:** `{data[selected_feature].nunique()}`')
-        st.write('**Sample Unique Values:**')
-        unique_values = data[selected_feature].unique()
-        if len(unique_values) > 20:
-            st.write(unique_values[:20])
-            st.caption(f'(Showing first 20 of {len(unique_values)} unique values)')
-        else:
-            st.write(unique_values)
-
-        if pd.api.types.is_numeric_dtype(data[selected_feature]):
-            st.subheader(f'Descriptive Statistics for `{selected_feature}`')
-            st.write(data[selected_feature].describe())
-            fig = px.histogram(data, x=selected_feature, title=f'Distribution of {selected_feature}')
-            st.plotly_chart(fig, use_container_width=True)
-        elif pd.api.types.is_string_dtype(data[selected_feature]) or pd.api.types.is_object_dtype(data[selected_feature]):
-            st.subheader(f'Value Counts for `{selected_feature}` (Top 20)')
-            st.write(data[selected_feature].value_counts().head(20))
-        else:
-            st.info('No specific descriptive statistics or value counts for this data type.')
+            if job_text_embeddings.size > 0:
+                st.write("Embeddings generated successfully!")
+                st.subheader(f"Clustering the Embeddings (K={N_CLUSTERS})")
+                @st.cache_data
+                def cluster_embeddings(embeddings, n_clusters):
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+                    clusters
 '''
 import streamlit as st
 import pandas as pd
