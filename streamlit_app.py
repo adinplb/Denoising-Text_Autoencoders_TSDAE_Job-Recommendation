@@ -144,7 +144,7 @@ if job_df is not None and 'processed_description' in job_df.columns:
 # --- Clustering the Embeddings ---
 @st.cache_data
 def cluster_embeddings(embeddings, n_clusters=5):
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10, n_init='auto') # Added n_init for scikit-learn > 1.2
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto') # Corrected KMeans initialization
     clusters = kmeans.fit_predict(embeddings)
     return clusters, kmeans.cluster_centers_
 
