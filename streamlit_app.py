@@ -1,132 +1,83 @@
 import streamlit as st
 import pandas as pd
-from kaggle.api.kaggle_api_extended import KaggleApi
+import kagglehub
 import os
 
 # --- Constants ---
 KAGGLE_DATASET_PATH = "kandij/job-recommendation-datasets"
-KAGGLE_FILENAMES = [
-    "Combined_Jobs_Final.csv",
-    "Experience.csv",
-    "Job_Views.csv",
-    "Positions_Of_Interest.csv",
-    "job_data.csv"
-]
-# Common encodings to try if utf-8 fails
-COMMON_ENCODINGS = ['utf-8', 'latin-1', 'cp1252']
+DATA_DIR = "data"
+FILENAME_TO_LOAD = "Combined_Jobs_Final.csv"  # Specify the file you want to load
 
-# --- Function to Load Data from Kaggle ---
-@st.cache_data(show_spinner="Downloading and loading data from Kaggle...")
-def load_data_from_kaggle(dataset_path, filename):
-    """
-    Authenticates with Kaggle API, downloads a specified file from a dataset,
-    and attempts to read it into a pandas DataFrame, trying common encodings and handling bad lines.
-    """
+# --- Function to Load Data from Kaggle using kagglehub ---
+@st.cache_data(show_spinner=f"Downloading and loading '{FILENAME_TO_LOAD}' from Kaggle...")
+def load_data_from_kaggle_hub(dataset_path, filename):
+    """Downloads a specific file from a Kaggle dataset using kagglehub and loads it."""
     try:
-        # Set Kaggle API credentials from Streamlit Secrets as environment variables
-        os.environ['KAGGLE_USERNAME'] = st.secrets["kaggle"]["username"]
-        os.environ['KAGGLE_KEY'] = st.secrets["kaggle"]["key"]
+        # Create the data directory if it doesn't exist
+        if not os.path.exists(DATA_DIR):
+            os.makedirs(DATA_DIR)
 
-        api = KaggleApi()
-        api.authenticate() # Authenticate using environment variables
+        download_path = kagglehub.dataset_download(dataset_path, path=DATA_DIR, force_download=False)
+        filepath = os.path.join(download_path, filename)
 
-        # Create a directory to store the data if it doesn't exist
-        data_dir = "data"
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
-
-        # Define the full path where the file will be saved
-        filepath = os.path.join(data_dir, filename)
-
-        # Download the specific file from the dataset if it's not already there
-        if not os.path.exists(filepath):
-            st.info(f"Downloading '{filename}' from Kaggle...")
-            api.dataset_download_file(dataset_path, filename, path=data_dir, force=False)
-        else:
-            st.info(f"Using cached file for '{filename}'.")
-
-        # Attempt to read the CSV with multiple encodings and handle bad lines
-        df = None
-        for encoding in COMMON_ENCODINGS:
+        if os.path.exists(filepath):
             try:
-                # Try with default separator (comma) and skipping bad lines
-                df = pd.read_csv(filepath, encoding=encoding, sep=',', on_bad_lines='skip', warn_bad_lines=True)
-                st.success(f"Successfully loaded '{filename}' with encoding: {encoding} (skipped bad lines)")
+                df = pd.read_csv(filepath)
+                st.success(f"Successfully loaded '{filename}' from Kaggle.")
                 return df
-            except pd.errors.ParserError as e_parser:
-                st.warning(f"ParserError with '{filename}', encoding: {encoding} (skipping bad lines): {e_parser}")
-                continue # Try the next encoding
-            except UnicodeDecodeError:
-                st.warning(f"UnicodeDecodeError with '{filename}', encoding: {encoding}.")
-                break # Move to the next encoding
             except Exception as e_read:
-                st.error(f"Error reading file '{filename}' with encoding: {encoding}: {e_read}")
-                return None # Other reading errors are fatal
-
-            if df is not None:
-                break
-
-        # If loop finishes, no encoding worked
-        st.error(f"Failed to load '{filename}' after trying multiple encodings and skipping bad lines.")
-        return None
-
-    except KeyError:
-        st.error("Kaggle API credentials not found in Streamlit Secrets. Please configure `kaggle.username` and `kaggle.key`.")
-        return None
-    except Exception as e_general:
-        st.error(f"An unexpected error occurred during data loading: {e_general}")
+                st.error(f"Error reading file '{filename}': {e_read}")
+                return None
+        else:
+            st.error(f"Error: File '{filename}' not found after downloading.")
+            return None
+    except Exception as e_download:
+        st.error(f"Error downloading data from Kaggle: {e_download}")
         return None
 
 # --- Main Dashboard ---
-st.title("Kaggle Dataset Explorer")
+st.title("Kaggle Dataset Explorer (using kagglehub)")
 
-st.subheader("Select a CSV File to Explore")
-selected_filename = st.selectbox("Choose a CSV file:", KAGGLE_FILENAMES)
+data_to_display = load_data_from_kaggle_hub(KAGGLE_DATASET_PATH, FILENAME_TO_LOAD)
 
-if selected_filename:
-    data_to_display = load_data_from_kaggle(KAGGLE_DATASET_PATH, selected_filename)
-    if data_to_display is not None:
-        st.subheader(f"Data: {selected_filename}")
-        st.dataframe(data_to_display, use_container_width=True)
+if data_to_display is not None:
+    st.subheader(f"Data: {FILENAME_TO_LOAD}")
+    st.dataframe(data_to_display, use_container_width=True)
 
-        st.subheader("Information about Features")
-        if not data_to_display.empty:
-            feature_list = data_to_display.columns.tolist()
-            st.write(f"Total Features: **{len(feature_list)}**")
-            st.write("**Features:**")
-            st.code(str(feature_list)) # Display as code for better readability of long lists
+    st.subheader("Information about Features")
+    if not data_to_display.empty:
+        feature_list = data_to_display.columns.tolist()
+        st.write(f"Total Features: **{len(feature_list)}**")
+        st.write("**Features:**")
+        st.code(str(feature_list))
 
-            st.subheader("Explore Feature Details")
-            # Add an empty string to allow no selection initially
-            selected_feature = st.selectbox("Select a Feature to see details:", [""] + feature_list)
-            if selected_feature:
-                st.write(f"**Feature:** `{selected_feature}`")
-                st.write(f"**Data Type:** `{data_to_display[selected_feature].dtype}`")
-                st.write(f"**Number of Unique Values:** `{data_to_display[selected_feature].nunique()}`")
+        st.subheader("Explore Feature Details")
+        selected_feature = st.selectbox("Select a Feature to see details:", [""] + feature_list)
+        if selected_feature:
+            # ... (rest of your feature exploration code) ...
+            st.write(f"**Feature:** `{selected_feature}`")
+            st.write(f"**Data Type:** `{data_to_display[selected_feature].dtype}`")
+            st.write(f"**Number of Unique Values:** `{data_to_display[selected_feature].nunique()}`")
+            st.write("**Sample Unique Values:**")
+            unique_values = data_to_display[selected_feature].unique()
+            if len(unique_values) > 20:
+                st.write(unique_values[:20])
+                st.caption(f"(Showing first 20 of {len(unique_values)} unique values)")
+            else:
+                st.write(unique_values)
 
-                # Display first 20 unique values or all if less than 20
-                unique_values = data_to_display[selected_feature].unique()
-                st.write("**Sample Unique Values:**")
-                if len(unique_values) > 20:
-                    st.write(unique_values[:20])
-                    st.caption(f"(Showing first 20 of {len(unique_values)} unique values)")
-                else:
-                    st.write(unique_values)
-
-                if pd.api.types.is_numeric_dtype(data_to_display[selected_feature]):
-                    st.subheader(f"Descriptive Statistics for `{selected_feature}`")
-                    st.write(data_to_display[selected_feature].describe())
-                elif pd.api.types.is_string_dtype(data_to_display[selected_feature]) or pd.api.types.is_object_dtype(data_to_display[selected_feature]):
-                    st.subheader(f"Value Counts for `{selected_feature}` (Top 20)")
-                    st.write(data_to_display[selected_feature].value_counts().head(20))
-                else:
-                    st.info("No specific descriptive statistics or value counts for this data type.")
-        else:
-            st.warning("The selected DataFrame is empty, so no feature information is available.")
+            if pd.api.types.is_numeric_dtype(data_to_display[selected_feature]):
+                st.subheader(f"Descriptive Statistics for `{selected_feature}`")
+                st.write(data_to_display[selected_feature].describe())
+            elif pd.api.types.is_string_dtype(data_to_display[selected_feature]) or pd.api.types.is_object_dtype(data_to_display[selected_feature]):
+                st.subheader(f"Value Counts for `{selected_feature}` (Top 20)")
+                st.write(data_to_display[selected_feature].value_counts().head(20))
+            else:
+                st.info("No specific descriptive statistics or value counts for this data type.")
     else:
-        st.info(f"Could not load data from {selected_filename}. Please check the error messages above.")
+        st.warning(f"The loaded DataFrame for '{FILENAME_TO_LOAD}' is empty.")
 else:
-    st.info("Please select a CSV file from the dropdown to start exploring.")
+    st.info(f"Could not load data for '{FILENAME_TO_LOAD}' from Kaggle.")
 '''
 import streamlit as st
 import pandas as pd
