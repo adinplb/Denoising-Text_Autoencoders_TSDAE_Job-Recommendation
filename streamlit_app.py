@@ -199,6 +199,62 @@ if job_df is not None and 'processed_description' in job_df.columns and bert_mod
     else:
         st.warning("No processed job descriptions found to generate embeddings.")
 
+# --- CV Upload Functionality ---
+def extract_text_from_pdf(uploaded_file):
+    """Extracts text from a PDF file."""
+    try:
+        text = pdf_extract_text(uploaded_file)
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text from PDF: {e}")
+        return None
+
+def extract_text_from_docx(uploaded_file):
+    """Extracts text from a DOCX file."""
+    try:
+        document = DocxDocument(uploaded_file)
+        text = ""
+        for paragraph in document.paragraphs:
+            text += paragraph.text + "\n"
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text from DOCX: {e}")
+        return None
+
+uploaded_cv = st.file_uploader("Upload your CV (PDF or DOCX)", type=["pdf", "docx"])
+cv_text = ""
+processed_cv_text = ""
+cv_embedding = None
+normalized_cv_embedding = None
+
+if uploaded_cv is not None:
+    file_extension = uploaded_cv.name.split(".")[-1].lower()
+    if file_extension == "pdf":
+        cv_text = extract_text_from_pdf(uploaded_cv)
+    elif file_extension == "docx":
+        cv_text = extract_text_from_docx(uploaded_cv)
+
+    if cv_text:
+        st.subheader("Uploaded CV Content (Preview)")
+        st.text_area("Raw CV Text", cv_text, height=300, key="raw_cv_text")
+
+        processed_cv_text = preprocess_text(cv_text)
+        st.subheader("Processed CV Content (Preview)")
+        st.text_area("Processed CV Text", processed_cv_text, height=200, key="processed_cv_text")
+
+        # Load BERT model and generate embedding for the processed CV text
+        # Using the cached model for consistency
+        bert_model_for_cv = load_bert_model()
+        if bert_model_for_cv: # Ensure model is loaded
+            cv_embedding = generate_embeddings(bert_model_for_cv, [processed_cv_text])[0]
+            normalized_cv_embedding = normalize(cv_embedding.reshape(1, -1))
+            st.success("CV processed and embedding generated!")
+        else:
+            st.error("BERT model failed to load, cannot process CV.")
+    else:
+        st.warning("Could not extract text from the uploaded CV. Please try a different file.")
+
+
 # --- Clustering the Embeddings ---
 @st.cache_data
 def cluster_embeddings(embeddings, n_clusters=5):
