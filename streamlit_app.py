@@ -619,17 +619,17 @@ def annotation_page():
 
     st.subheader("Annotation Form")
     all_annotations_data = []
-    
+
     for cv_filename, recommendations_df in st.session_state['all_recommendations_for_annotation'].items():
         st.markdown(f"### Annotate Recommendations for CV: **{cv_filename}**")
-        
+
         for idx, row in recommendations_df.iterrows():
             st.write(f"**Job ID:** {row['Job.ID']}")
             st.write(f"**Title:** {row['Title']}")
             st.write(f"**Description:** {row['text']}")
             st.write(f"**Similarity Score:** {row['similarity_score']:.4f}")
             st.write(f"**Cluster:** {row['cluster']}")
-            
+
             annotation_row_data = {
                 'cv_filename': cv_filename,
                 'job_id': row['Job.ID'],
@@ -642,15 +642,16 @@ def annotation_page():
             cols = st.columns(len(ANNOTATORS))
             for i, annotator in enumerate(ANNOTATORS):
                 with cols[i]:
-                    # Numerical input (Relevant/Not Relevant)
+                    # Numerical input with labels
                     relevance = st.radio(
-                        f"{annotator} - Relevance Score:", # Changed label
-                        options=[0, 1, 2, 3], # Changed options
-                        index=0, # Default to 0
+                        f"{annotator} - Relevance:",
+                        options=[0, 1, 2, 3],
+                        format_func=lambda x: f"{x}: " + ("Very Irrelevant" if x == 0 else "Slightly Relevant" if x == 1 else "Moderately Relevant" if x == 2 else "Very Relevant"),
+                        index=0,
                         key=f"relevance_{cv_filename}_{row['Job.ID']}_{annotator}"
                     )
-                    annotation_row_data[f'annotator_{i+1}_relevance'] = relevance # Store numerical value
-                    
+                    annotation_row_data[f'annotator_{i+1}_relevance'] = relevance
+
                     # Qualitative input (Text area)
                     qualitative_feedback = st.text_area(
                         f"{annotator} - Feedback",
@@ -658,7 +659,7 @@ def annotation_page():
                         height=68
                     )
                     annotation_row_data[f'annotator_{i+1}_feedback'] = qualitative_feedback
-            
+
             all_annotations_data.append(annotation_row_data)
             st.markdown("---") # Separator for each job
 
@@ -667,7 +668,7 @@ def annotation_page():
         st.success("Annotations submitted successfully!")
         st.subheader("Collected Annotations Preview")
         st.dataframe(st.session_state['collected_annotations'], use_container_width=True)
-        
+
         # Optional: Save annotations to CSV
         csv_buffer = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8')
         st.download_button(
