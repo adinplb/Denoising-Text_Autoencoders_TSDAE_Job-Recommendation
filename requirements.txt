@@ -8,3 +8,6 @@ matplotlib
 seaborn
 numpy
 nltk
+pdfminer.six
+python-docx
+plotly
