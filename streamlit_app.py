@@ -5,6 +5,7 @@ import plotly.express as px
 import os
 from pdfminer.high_level import extract_text as pdf_extract_text
 from docx import Document as DocxDocument
+from sentence_transformers import SentenceTransformer
 
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
@@ -33,7 +34,7 @@ def extract_text_from_pdf(uploaded_file):
 # --- Function to Extract Text from DOCX ---
 def extract_text_from_docx(uploaded_file):
     try:
-        document = DocxDocument(uploaded_file)
+        document = Document(uploaded_file) # Assuming Document is imported from docx
         text = ""
         for paragraph in document.paragraphs:
             text += paragraph.text + "\n"
@@ -41,6 +42,33 @@ def extract_text_from_docx(uploaded_file):
     except Exception as e:
         st.error(f"Error extracting text from DOCX: {e}")
         return None
+
+# --- Embedding Generation Functions ---
+@st.cache_resource
+def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for faster loading/embedding
+    """Loads the SentenceTransformer model (cached)."""
+    try:
+        model = SentenceTransformer(model_name)
+        return model
+    except Exception as e:
+        st.error(f"Error loading BERT model '{model_name}': {e}")
+        return None
+
+@st.cache_data
+def generate_embeddings(_model, texts):
+    """
+    Generates embeddings for a list of texts using the provided model (cached).
+    _model argument is prefixed with underscore to prevent Streamlit hashing errors.
+    """
+    if _model is None:
+        st.error("BERT model is not loaded. Cannot generate embeddings.")
+        return np.array([])
+    try:
+        embeddings = _model.encode(texts, convert_to_tensor=True)
+        return embeddings.cpu().numpy()
+    except Exception as e:
+        st.error(f"Error generating embeddings: {e}")
+        return np.array([])
 
 # --- Main Dashboard ---
 st.title('Exploratory Data Analysis of Job Data')
@@ -61,11 +89,36 @@ with st.sidebar:
             st.subheader("Uploaded CV Content (Preview)")
             st.text_area("CV Text", cv_text, height=300)
 
+# Load data
 data = load_data_from_url(DATA_URL)
 
 if data is not None:
     st.subheader('Data Preview')
     st.dataframe(data.head(), use_container_width=True)
+
+    # --- Generate Embeddings for 'text' column ---
+    st.subheader("Generating Embeddings for 'text' column")
+    bert_model = load_bert_model()
+    job_text_embeddings = None
+
+    if bert_model is not None and 'text' in data.columns:
+        # Filter out NaN values before sending to model
+        texts_to_embed = data['text'].fillna('').tolist()
+        if texts_to_embed:
+            job_text_embeddings = generate_embeddings(bert_model, texts_to_embed)
+            if job_text_embeddings.size > 0:
+                st.write("Embeddings generated successfully!")
+                st.subheader("Embeddings (Matrix Preview)")
+                st.write("Shape of the embedding matrix:", job_text_embeddings.shape)
+                st.write("Preview of the first 3 embeddings:")
+                st.write(job_text_embeddings[:3])
+                st.info(f"Each job description is now represented by a vector of {job_text_embeddings.shape[1]} dimensions.")
+            else:
+                st.warning("No embeddings generated. 'text' column might be empty.")
+        else:
+            st.warning("No text found in 'text' column to generate embeddings.")
+    else:
+        st.warning("BERT model not loaded or 'text' column missing. Cannot generate embeddings.")
 
     st.subheader('Search for a Word in a Feature')
     search_word = st.text_input("Enter a word to search:")
@@ -108,11 +161,7 @@ if data is not None:
             st.write(data[selected_feature].describe())
             fig = px.histogram(data, x=selected_feature, title=f'Distribution of {selected_feature}')
             st.plotly_chart(fig, use_container_width=True)
-        elif pd.api.types.is_string_dtype(data[selected_feature]) or pd.api.types.is_object_dtype(data[selected_feature]):
-            st.subheader(f'Value Counts for `{selected_feature}` (Top 20)')
-            st.write(data[selected_feature].value_counts().head(20))
-        else:
-            st.info('No specific descriptive statistics or value counts for this data type.')
+        elif pd.api.types.is_string_dtype(
 '''
 import streamlit as st
 import pandas as pd
