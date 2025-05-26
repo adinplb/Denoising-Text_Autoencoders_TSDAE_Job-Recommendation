@@ -11,10 +11,11 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
-from tqdm import tqdm  # Import tqdm for progress bar
+from tqdm import tqdm  # Import tqdm for progress bar (for local testing visibility)
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import normalize
+from sklearn.decomposition import PCA # For 2D visualization in BERT model page
 
 # Download necessary NLTK resources (run once)
 try:
@@ -33,32 +34,41 @@ except LookupError:
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
 RELEVANT_FEATURES = ['Job.ID', 'text', 'Title']
-N_CLUSTERS = 20
+N_CLUSTERS = 20 # Default number of clusters
 
-# --- Function to Load Data from URL ---
+# --- Global Data Storage (using Streamlit Session State) ---
+# This helps share data between pages without re-running heavy computations
+if 'data' not in st.session_state:
+    st.session_state['data'] = None
+if 'job_text_embeddings' not in st.session_state:
+    st.session_state['job_text_embeddings'] = None
+if 'job_clusters' not in st.session_state:
+    st.session_state['job_clusters'] = None
+if 'cv_text' not in st.session_state:
+    st.session_state['cv_text'] = ""
+
+# --- Helper Functions ---
 @st.cache_data(show_spinner='Loading data...')
 def load_data_from_url(url):
     try:
         df = pd.read_csv(url)
         st.success('Successfully loaded data!')
-        return df[RELEVANT_FEATURES].copy()  # Select only the relevant features and create a copy
+        return df[RELEVANT_FEATURES].copy()
     except Exception as e:
         st.error(f'Error loading data from URL: {e}')
         return None
 
-# --- Function to Extract Text from PDF ---
 def extract_text_from_pdf(uploaded_file):
     try:
-        text = extract_text_from_pdf(uploaded_file)
+        text = pdf_extract_text(uploaded_file)
         return text
     except Exception as e:
         st.error(f"Error extracting text from PDF: {e}")
         return None
 
-# --- Function to Extract Text from DOCX ---
 def extract_text_from_docx(uploaded_file):
     try:
-        document = Document(uploaded_file)  # Assuming Document is imported from docx
+        document = Document(uploaded_file)
         text = ""
         for paragraph in document.paragraphs:
             text += paragraph.text + "\n"
@@ -86,21 +96,27 @@ def preprocess_text_with_intermediate(data_df):
                     # Case Folding
                     case_folded = symbol_removed.lower()
                     intermediate['case_folded'] = case_folded
+                    # Tokenize (for filtering/stopwords/stemming steps)
+                    word_tokens = word_tokenize(case_folded)
+                    intermediate['tokenized'] = " ".join(word_tokens) # Store tokenized for display
                     # Stopwords Removal
                     stop_words = set(stopwords.words('english'))
-                    word_tokens = word_tokenize(case_folded)
                     filtered = [w for w in word_tokens if w not in stop_words]
                     intermediate['stopwords_removed'] = " ".join(filtered)
                     # Stemming
                     porter = PorterStemmer()
                     stemmed = [porter.stem(w) for w in filtered]
-                    intermediate['stemmed'] = " ".join(stemmed)
+                    intermediate['stemmed'] = " ".join(stemmed) # This is the final preprocessed text
                     processed_results.append(intermediate)
                 else:
-                    processed_results.append({'original': '', 'symbol_removed': '', 'case_folded': '', 'stopwords_removed': '', 'stemmed': ''})
+                    processed_results.append({
+                        'original': '', 'symbol_removed': '', 'case_folded': '',
+                        'tokenized': '', 'stopwords_removed': '', 'stemmed': ''
+                    })
                 progress_bar.progress((i + 1) / total_rows)
                 status_text.text(f"Processed {i + 1}/{total_rows} entries.")
-            data_df['processed_results'] = processed_results
+            data_df['preprocessing_steps'] = processed_results
+            data_df['processed_text'] = [d['stemmed'] for d in processed_results] # Final preprocessed text
             st.success("Preprocessing of 'text' column complete!")
             progress_bar.empty()
             status_text.empty()
@@ -110,8 +126,7 @@ def preprocess_text_with_intermediate(data_df):
 
 # --- Embedding Generation Functions ---
 @st.cache_resource
-def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for faster loading/embedding
-    """Loads the SentenceTransformer model (cached)."""
+def load_bert_model(model_name="all-MiniLM-L6-v2"):
     try:
         model = SentenceTransformer(model_name)
         return model
@@ -121,11 +136,6 @@ def load_bert_model(model_name="all-MiniLM-L6-v2"): # Using a smaller model for 
 
 @st.cache_data
 def generate_embeddings_with_progress(_model, texts):
-    """
-    Generates embeddings for a list of texts using the provided model (cached).
-    Includes a Streamlit spinner and a progress bar.
-    _model argument is prefixed with underscore to prevent Streamlit hashing errors.
-    """
     if _model is None:
         st.error("BERT model is not loaded. Cannot generate embeddings.")
         return np.array([])
@@ -135,7 +145,7 @@ def generate_embeddings_with_progress(_model, texts):
             embedding_status_text = st.empty()
             embeddings = []
             total_texts = len(texts)
-            batch_size = 32 # Adjust based on your model and memory
+            batch_size = 32
             for i in range(0, total_texts, batch_size):
                 batch_texts = texts[i:i + batch_size]
                 batch_embeddings = _model.encode(batch_texts, convert_to_tensor=True)
@@ -153,7 +163,6 @@ def generate_embeddings_with_progress(_model, texts):
 
 @st.cache_data
 def cluster_embeddings_with_progress(embeddings, n_clusters):
-    """Clusters embeddings using KMeans and displays a progress bar."""
     if embeddings is None or embeddings.size == 0:
         st.warning("No embeddings to cluster.")
         return None
@@ -164,7 +173,240 @@ def cluster_embeddings_with_progress(embeddings, n_clusters):
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
             clusters = kmeans.fit_predict(embeddings)
             st.success(f"Clustering complete!")
-            cluster_
+            cluster_progress_bar.empty()
+            cluster_status_text.empty()
+            return clusters
+    except Exception as e:
+        st.error(f"Error during clustering: {e}")
+        return None
+
+# --- Page Functions ---
+
+def home_page():
+    st.header("Home: Exploratory Data Analysis")
+    st.write("This page provides an overview of the job dataset and allows you to explore its features.")
+
+    if st.session_state['data'] is None:
+        st.session_state['data'] = load_data_from_url(DATA_URL)
+
+    data = st.session_state['data']
+
+    if data is not None:
+        st.subheader('Data Preview')
+        st.dataframe(data.head(), use_container_width=True)
+
+        st.subheader('Data Summary')
+        st.write(f'Number of rows: {len(data)}')
+        st.write(f'Number of columns: {len(data.columns)}')
+
+        st.subheader('Search for a Word in a Feature')
+        search_word = st.text_input("Enter a word to search:")
+        search_column = st.selectbox("Select the feature to search in:", [''] + data.columns.tolist())
+
+        if search_word and search_column:
+            if search_column in data.columns:
+                search_results = data[data[search_column].astype(str).str.contains(search_word, case=False, na=False)]
+                if not search_results.empty:
+                    st.subheader(f"Search results for '{search_word}' in '{search_column}':")
+                    st.dataframe(search_results, use_container_width=True)
+                    st.write(f"Found {len(search_results)} matching entries in '{search_column}'.")
+                else:
+                    st.info(f"No entries found in '{search_column}' containing '{search_word}'.")
+            else:
+                st.error(f"Error: Column '{search_column}' not found in the data.")
+
+        st.subheader('Feature Information')
+        feature_list = data.columns.tolist()
+        st.write(f'Total Features: **{len(feature_list)}**')
+        st.write('**Features:**')
+        st.code(str(feature_list))
+
+        st.subheader('Explore Feature Details')
+        selected_feature = st.selectbox('Select a Feature to see details:', [''] + feature_list)
+        if selected_feature:
+            st.write(f'**Feature:** `{selected_feature}`')
+            st.write(f'**Data Type:** `{data[selected_feature].dtype}`')
+            st.write(f'**Number of Unique Values:** `{data[selected_feature].nunique()}`')
+            st.write('**Sample Unique Values:**')
+            unique_values = data[selected_feature].unique()
+            if len(unique_values) > 20:
+                st.write(unique_values[:20])
+                st.caption(f'(Showing first 20 of {len(unique_values)} unique values)')
+            else:
+                st.write(unique_values)
+
+            if pd.api.types.is_numeric_dtype(data[selected_feature]):
+                st.subheader(f'Descriptive Statistics for `{selected_feature}`')
+                st.write(data[selected_feature].describe())
+                fig = px.histogram(data, x=selected_feature, title=f'Distribution of {selected_feature}')
+                st.plotly_chart(fig, use_container_width=True)
+            elif pd.api.types.is_string_dtype(data[selected_feature]) or pd.api.types.is_object_dtype(data[selected_feature]):
+                st.subheader(f'Value Counts for `{selected_feature}` (Top 20)')
+                st.write(data[selected_feature].value_counts().head(20))
+            else:
+                st.info('No specific descriptive statistics or value counts for this data type.')
+
+def preprocessing_page():
+    st.header("Preprocessing")
+    st.write("This page performs text preprocessing on the 'text' column, showing intermediate steps.")
+
+    if st.session_state['data'] is None:
+        st.session_state['data'] = load_data_from_url(DATA_URL)
+
+    data = st.session_state['data']
+
+    if data is not None:
+        data = preprocess_text_with_intermediate(data)
+        st.session_state['data'] = data # Update session state with preprocessed data
+
+        if 'preprocessing_steps' in data.columns:
+            st.subheader("Preprocessing Results (Intermediate Steps)")
+            # Create a DataFrame for display
+            display_df = pd.DataFrame([step for step in data['preprocessing_steps']])
+            st.dataframe(display_df.head(), use_container_width=True)
+
+            st.subheader("Final Preprocessed Text (Preview)")
+            st.dataframe(data[['text', 'processed_text']].head(), use_container_width=True)
+
+            st.subheader('Search for a Word in Preprocessed Text')
+            search_word_preprocessed = st.text_input("Enter a word to search in 'processed_text':")
+            if search_word_preprocessed:
+                search_results_preprocessed = data[data['processed_text'].str.contains(search_word_preprocessed, case=False, na=False)]
+                if not search_results_preprocessed.empty:
+                    st.subheader(f"Search results for '{search_word_preprocessed}' in 'processed_text':")
+                    st.dataframe(search_results_preprocessed[['Job.ID', 'Title', 'processed_text']], use_container_width=True)
+                    st.write(f"Found {len(search_results_preprocessed)} matching entries.")
+                else:
+                    st.info(f"No entries found in 'processed_text' containing '{search_word_preprocessed}'.")
+        else:
+            st.warning("Preprocessing steps not available.")
+    else:
+        st.info("Data not loaded. Please go to Home page first.")
+
+def bert_model_page():
+    st.header("BERT Model: Embedding Generation & Visualization")
+    st.write("This page generates BERT embeddings from the preprocessed text and visualizes them.")
+
+    if st.session_state['data'] is None or 'processed_text' not in st.session_state['data'].columns:
+        st.warning("Please preprocess the data first by visiting the 'Preprocessing' page.")
+        return
+
+    data = st.session_state['data']
+    bert_model = load_bert_model()
+
+    if bert_model is not None:
+        texts_to_embed = data['processed_text'].fillna('').tolist()
+        if texts_to_embed:
+            st.session_state['job_text_embeddings'] = generate_embeddings_with_progress(bert_model, texts_to_embed)
+            job_text_embeddings = st.session_state['job_text_embeddings']
+
+            if job_text_embeddings.size > 0:
+                st.subheader("Embeddings (Matrix Preview)")
+                st.write("Shape of the embedding matrix:", job_text_embeddings.shape)
+                st.write("Preview of the first 3 embeddings:")
+                st.write(job_text_embeddings[:3])
+                st.info(f"Each processed job description is now represented by a vector of {job_text_embeddings.shape[1]} dimensions.")
+
+                st.subheader("2D Visualization of Embeddings (PCA)")
+                pca = PCA(n_components=2)
+                reduced_embeddings_2d = pca.fit_transform(job_text_embeddings)
+
+                plot_df = pd.DataFrame(reduced_embeddings_2d, columns=['PC1', 'PC2'])
+                plot_df['title'] = data['Title'].tolist()
+                plot_df['description'] = data['text'].tolist() # Use original text for hover
+
+                fig = px.scatter(plot_df, x='PC1', y='PC2',
+                                 hover_name='title', hover_data={'description': True},
+                                 title='2D Visualization of Job Embeddings (PCA)',
+                                 width=800, height=600)
+                st.plotly_chart(fig, use_container_width=True)
+
+            else:
+                st.warning("No embeddings generated. 'processed_text' column might be empty.")
+        else:
+            st.warning("No text found in 'processed_text' column to generate embeddings.")
+    else:
+        st.warning("BERT model not loaded. Cannot generate embeddings.")
+
+def clustering_page():
+    st.header("Clustering Job2Vec")
+    st.write("This page clusters the generated BERT embeddings using K-Means.")
+
+    if st.session_state['job_text_embeddings'] is None:
+        st.warning("Please generate embeddings first by visiting the 'BERT Model' page.")
+        return
+
+    job_text_embeddings = st.session_state['job_text_embeddings']
+    data = st.session_state['data'] # Get data with original text
+
+    if job_text_embeddings.size > 0:
+        st.subheader("Clustering Settings")
+        num_clusters_input = st.slider("Number of Clusters (K)", min_value=2, max_value=min(50, len(job_text_embeddings)), value=N_CLUSTERS)
+
+        if st.button(f"Perform K-Means Clustering with K={num_clusters_input}"):
+            st.session_state['job_clusters'] = cluster_embeddings_with_progress(job_text_embeddings, num_clusters_input)
+            st.session_state['data']['cluster'] = st.session_state['job_clusters'] # Add clusters to data
+
+        if 'cluster' in st.session_state['data'].columns:
+            st.subheader(f"Clustering Results (K={num_clusters_input})")
+            st.write("Original Text and Cluster Assignments:")
+            st.dataframe(st.session_state['data'][['text', 'cluster']].head(10), use_container_width=True)
+
+            # Display a sample of each cluster
+            st.subheader("Sample Job Descriptions per Cluster")
+            for cluster_num in sorted(st.session_state['data']['cluster'].unique()):
+                st.write(f"**Cluster {cluster_num}:**")
+                cluster_sample = st.session_state['data'][st.session_state['data']['cluster'] == cluster_num].sample(min(5, len(st.session_state['data'][st.session_state['data']['cluster'] == cluster_num])))
+                st.dataframe(cluster_sample[['text', 'cluster']], use_container_width=True)
+                st.write("---")
+        else:
+            st.info("No clustering performed yet. Click the button above.")
+    else:
+        st.warning("No embeddings available for clustering.")
+
+def upload_cv_page():
+    st.header("Upload CV")
+    st.write("Upload your CV in PDF or Word format.")
+    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
+    if uploaded_cv is not None:
+        file_extension = uploaded_cv.name.split(".")[-1].lower()
+        try:
+            if file_extension == "pdf":
+                st.session_state['cv_text'] = extract_text_from_pdf(uploaded_cv)
+            elif file_extension == "docx":
+                st.session_state['cv_text'] = extract_text_from_docx(uploaded_cv)
+            st.success("CV uploaded successfully!")
+            if st.session_state['cv_text']:
+                st.subheader("Uploaded CV Content (Preview)")
+                st.text_area("CV Text", st.session_state['cv_text'], height=300)
+            else:
+                st.warning("Could not extract text from the uploaded CV.")
+        except Exception as e:
+            st.error(f"Error reading CV file: {e}")
+
+# --- Main App Logic (Page Navigation) ---
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Go to", ["Home", "Preprocessing", "BERT Model", "Clustering Job2Vec", "Upload CV"])
+
+if page == "Home":
+    home_page()
+elif page == "Preprocessing":
+    preprocessing_page()
+elif page == "BERT Model":
+    bert_model_page()
+elif page == "Clustering Job2Vec":
+    clustering_page()
+elif page == "Upload CV":
+    upload_cv_page()
+
+
+
+
+
+
+
+
+
 '''
 import streamlit as st
 import pandas as pd
