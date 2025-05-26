@@ -654,7 +654,7 @@ def annotation_page():
                     qualitative_feedback = st.text_area(
                         f"{annotator} - Feedback",
                         key=f"feedback_{cv_filename}_{row['Job.ID']}_{annotator}",
-                        height=50
+                        height=68 # Changed height from 50 to 68
                     )
                     annotation_row_data[f'annotator_{i+1}_feedback'] = qualitative_feedback
             
