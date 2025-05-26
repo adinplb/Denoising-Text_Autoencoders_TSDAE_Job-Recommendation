@@ -74,7 +74,7 @@ def load_data_from_kaggle(dataset_path, filename):
 st.title("Kaggle Dataset Explorer")
 
 st.subheader("Select a CSV File to Explore")
-selected_filename = st.selectbox("Choose a CSV file:", KAGGLE_FILENAMES)
+selected_filename = st.selectbox("Choose a CSV file:", KAGGLE_FILENAMES, index=0) # Set index=0 to default to Combined_Jobs_Final.csv
 
 if selected_filename:
     data_to_display = load_data_from_kaggle(KAGGLE_DATASET_PATH, selected_filename)
