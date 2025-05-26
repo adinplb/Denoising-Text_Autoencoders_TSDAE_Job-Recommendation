@@ -13,7 +13,7 @@ KAGGLE_FILENAMES = [
     "job_data.csv"
 ]
 # Common encodings to try if utf-8 fails
-COMMON_ENCODINGS = ['utf-8', 'latin-1', 'cp1252']
+COMMON_ENCODINGS = ['utf-8', 'latin-1', 'cp1252', 'ISO-8859-15', 'windows-1251', 'gbk', 'big5']
 
 # --- Function to Load Data from Kaggle ---
 @st.cache_data(show_spinner="Downloading and loading data from Kaggle...")
