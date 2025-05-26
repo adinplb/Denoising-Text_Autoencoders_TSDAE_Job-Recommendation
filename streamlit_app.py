@@ -1,3 +1,158 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.preprocessing import normalize
+import plotly.express as px
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from pdfminer.high_level import extract_text as pdf_extract_text
+from docx import Document as DocxDocument
+import umap  # Import UMAP
+
+# --- Constants ---
+JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
+N_CLUSTERS = 20
+
+# --- Data Loading ---
+@st.cache_data
+def load_job_data(url):
+    try:
+        df = pd.read_csv(url)
+        if 'text' in df.columns and 'Title' in df.columns:
+            return df[['Job.ID', 'text', 'Title']].rename(columns={'text': 'description', 'Title': 'title'})
+        else:
+            st.error("Error: 'text' and 'Title' columns not found in the job data.")
+            return None
+    except Exception as e:
+        st.error(f"Error loading data from {url}: {e}")
+        return None
+
+job_df = load_job_data(JOB_DATA_URL)
+
+# --- Sidebar ---
+with st.sidebar:
+    st.header("Upload Your CV")
+    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
+    cv_text = ""
+    if uploaded_cv:
+        try:
+            file_extension = uploaded_cv.name.split(".")[-1].lower()
+            if file_extension == "pdf":
+                cv_text = pdf_extract_text(uploaded_file)
+            elif file_extension == "docx":
+                doc = DocxDocument(uploaded_file)
+                cv_text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+            st.success("CV uploaded successfully!")
+        except Exception as e:
+            st.error(f"Error reading CV file: {e}")
+
+    st.header("Visualization Settings")
+    visualization_type = st.selectbox("Visualization Type", ["2D", "3D", "UMAP", "PCA"], index=1)
+
+# --- Main Dashboard ---
+st.title("Clustered Job Posting Embedding Visualization")
+
+if job_df is not None:
+    st.subheader("Job Data Preview")
+    st.dataframe(job_df.head())
+
+    # --- Embedding Generation ---
+    @st.cache_resource
+    def load_bert_model(model_name="all-mpnet-base-v2"):
+        model = SentenceTransformer(model_name)
+        return model
+
+    @st.cache_data
+    def generate_job_embeddings(_model, df):
+        if df is not None and 'description' in df.columns:
+            job_descriptions = df['description'].fillna('').tolist()
+            embeddings = _model.encode(job_descriptions, convert_to_tensor=True).cpu().numpy()
+            normalized_embeddings = normalize(embeddings)
+            return normalized_embeddings
+        return None
+
+    bert_model = load_bert_model()
+    job_embeddings = generate_job_embeddings(bert_model, job_df)
+    cv_embedding = None
+    normalized_cv_embedding = None
+
+    if cv_text and bert_model is not None:
+        cv_embedding = bert_model.encode([cv_text], convert_to_tensor=True).cpu().numpy()
+        normalized_cv_embedding = normalize(cv_embedding)
+        st.subheader("Uploaded CV Content (Preview)")
+        st.text_area("CV Text", cv_text, height=300)
+
+    if job_embeddings is not None:
+        st.subheader(f"{visualization_type} Visualization of Clustered Job Postings (K={N_CLUSTERS})")
+
+        # --- K-Means Clustering ---
+        @st.cache_data
+        def cluster_job_embeddings(embeddings, n_clusters):
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+            clusters = kmeans.fit_predict(embeddings)
+            return clusters
+
+        job_clusters = cluster_job_embeddings(job_embeddings, N_CLUSTERS)
+
+        # --- Dimensionality Reduction and Visualization ---
+        if visualization_type == "UMAP":
+            reducer = umap.UMAP(n_components=3 if visualization_type == "3D" else 2, random_state=42)
+            reduced_embeddings = reducer.fit_transform(job_embeddings)
+            n_components = reduced_embeddings.shape[1]
+            plot_df = pd.DataFrame(reduced_embeddings, columns=[f'UMAP{i+1}' for i in range(n_components)])
+            plot_df['title'] = job_df['title'].tolist()
+            plot_df['description'] = job_df['description'].tolist()
+            plot_df['cluster'] = job_clusters.astype(str)
+
+            if n_components == 3:
+                fig = px.scatter_3d(plot_df, x='UMAP1', y='UMAP2', z='UMAP3', color='cluster',
+                                    hover_name='title', hover_data={'description': True, 'cluster': True},
+                                    title=f'UMAP 3D Visualization (K={N_CLUSTERS})', width=800, height=700)
+                st.plotly_chart(fig)
+            else:
+                fig = px.scatter(plot_df, x='UMAP1', y='UMAP2', color='cluster',
+                                 hover_name='title', hover_data={'description': True, 'cluster': True},
+                                 title=f'UMAP 2D Visualization (K={N_CLUSTERS})', width=800, height=700)
+                st.plotly_chart(fig)
+
+        elif visualization_type == "PCA":
+            reducer = PCA(n_components=3 if visualization_type == "3D" else 2)
+            reduced_embeddings = reducer.fit_transform(job_embeddings)
+            n_components = reduced_embeddings.shape[1]
+            plot_df = pd.DataFrame(reduced_embeddings, columns=[f'PC{i+1}' for i in range(n_components)])
+            plot_df['title'] = job_df['title'].tolist()
+            plot_df['description'] = job_df['description'].tolist()
+            plot_df['cluster'] = job_clusters.astype(str)
+
+            if n_components == 3:
+                fig = px.scatter_3d(plot_df, x='PC1', y='PC2', z='PC3', color='cluster',
+                                    hover_name='title', hover_data={'description': True, 'cluster': True},
+                                    title=f'PCA 3D Visualization (K={N_CLUSTERS})', width=800, height=700)
+                st.plotly_chart(fig)
+            else:
+                fig = px.scatter(plot_df, x='PC1', y='PC2', color='cluster',
+                                 hover_name='title', hover_data={'description': True, 'cluster': True},
+                                 title=f'PCA 2D Visualization (K={N_CLUSTERS})', width=800, height=700)
+                st.plotly_chart(fig)
+
+        elif visualization_type == "3D": # Basic 3D (using first 3 dimensions of embeddings)
+            plot_df = pd.DataFrame(job_embeddings[:, :3], columns=['x', 'y', 'z'])
+            plot_df['title'] = job_df['title'].tolist()
+            plot_df['description'] = job_df['description'].tolist()
+            plot_df['cluster'] = job_clusters.astype(str)
+            fig = px.scatter_3d(plot_df, x='x', y='y', z='z', color='cluster',
+                                hover_name='title', hover_data={'description': True, 'cluster': True},
+                                title=f'Basic 3D Embedding Visualization (K={N_CLUSTERS})', width=800, height=700)
+            st.plotly_chart(fig)
+
+        elif visualization_type == "2D": # Basic 2D (using first 2 dimensions of embeddings)
+            plot_df = pd.DataFrame(job_embeddings[:, :2], columns=['x', 'y'])
+            plot_df['title'] = job_df['title'].tolist()
+            plot_df['description'] = job_df['description'].tolist()
+
+
+
 '''
 import streamlit as st
 import pandas as pd
@@ -112,6 +267,8 @@ if normalized_cv_embedding is not None and normalized_job_embeddings is not None
     st.write(f"Maximum Similarity: {max_similarity:.4f}")
     st.write(f"Minimum Similarity: {min_similarity:.4f}")
 '''
+'''
+UMAP USED
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -199,3 +356,5 @@ if job_df is not None:
 
 else:
     st.info("Job data not loaded. Please ensure the URL is correct.")
+
+'''
