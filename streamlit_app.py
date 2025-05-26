@@ -3,20 +3,11 @@ import pandas as pd
 from kaggle.api.kaggle_api_extended import KaggleApi
 import os
 
-# --- Constants ---
-KAGGLE_DATASET_PATH = "kandij/job-recommendation-datasets"
-KAGGLE_FILENAMES = [
-    "Combined_Jobs_Final.csv",
-    "Experience.csv",
-    "Job_Views.csv",
-    "Positions_Of_Interest.csv",
-    "job_data.csv"
-]
-
 # --- Function to Load Data from Kaggle ---
 @st.cache_data
 def load_data_from_kaggle(dataset_path, filename):
     api = KaggleApi()
+    # Authenticate using username and key from Streamlit Secrets
     api.authenticate(st.secrets["kaggle"]["username"], st.secrets["kaggle"]["key"])
 
     # Create a directory to store the data if it doesn't exist
@@ -45,17 +36,17 @@ def load_data_from_kaggle(dataset_path, filename):
 st.title("Kaggle Dataset Explorer")
 
 st.subheader("Select a CSV File to Explore")
-selected_filename = st.selectbox("Choose a CSV file:", KAGGLE_FILENAMES)
+selected_filename = st.selectbox("Choose a CSV file:", ["Combined_Jobs_Final.csv", "Experience.csv", "Job_Views.csv", "Positions_Of_Interest.csv", "job_data.csv"])
 
 if selected_filename:
-    data = load_data_from_kaggle(KAGGLE_DATASET_PATH, selected_filename)
-    if data is not None:
+    data_to_display = load_data_from_kaggle("kandij/job-recommendation-datasets", selected_filename)
+    if data_to_display is not None:
         st.subheader(f"Data: {selected_filename}")
-        st.dataframe(data)
+        st.dataframe(data_to_display)
 
         st.subheader("Information about Features")
-        if not data.empty:
-            feature_list = data.columns.tolist()
+        if not data_to_display.empty:
+            feature_list = data_to_display.columns.tolist()
             st.write(f"Total Features: {len(feature_list)}")
             st.write("Features:")
             st.write(feature_list)
@@ -64,23 +55,22 @@ if selected_filename:
             selected_feature = st.selectbox("Select a Feature to see details:", [""] + feature_list)
             if selected_feature:
                 st.write(f"**Feature:** `{selected_feature}`")
-                st.write(f"**Data Type:** `{data[selected_feature].dtype}`")
-                st.write(f"**Number of Unique Values:** `{data[selected_feature].nunique()}`")
+                st.write(f"**Data Type:** `{data_to_display[selected_feature].dtype}`")
+                st.write(f"**Number of Unique Values:** `{data_to_display[selected_feature].nunique()}`")
                 st.write("**First 20 Unique Values:**")
-                st.write(data[selected_feature].unique()[:20])
-                if data[selected_feature].dtype in ['int64', 'float64']:
+                st.write(data_to_display[selected_feature].unique()[:20])
+                if data_to_display[selected_feature].dtype in ['int64', 'float64']:
                     st.subheader(f"Descriptive Statistics for `{selected_feature}`")
-                    st.write(data[selected_feature].describe())
-                elif data[selected_feature].dtype == 'object':
+                    st.write(data_to_display[selected_feature].describe())
+                elif data_to_display[selected_feature].dtype == 'object':
                     st.subheader(f"Value Counts for `{selected_feature}` (Top 20)")
-                    st.write(data[selected_feature].value_counts().head(20))
+                    st.write(data_to_display[selected_feature].value_counts().head(20))
         else:
             st.warning("The selected DataFrame is empty.")
     else:
         st.info(f"Could not load data from {selected_filename}.")
 else:
     st.info("Please select a CSV file to explore.")
-
 '''
 import streamlit as st
 import pandas as pd
