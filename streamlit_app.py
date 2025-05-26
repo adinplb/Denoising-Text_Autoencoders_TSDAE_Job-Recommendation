@@ -12,8 +12,9 @@ from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm  # Import tqdm for progress bar
-from sentence_transformers import SentenceTransformer, util # Import SentenceTransformer
+from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
+from sklearn.preprocessing import normalize
 
 # Download necessary NLTK resources (run once)
 try:
@@ -48,7 +49,7 @@ def load_data_from_url(url):
 # --- Function to Extract Text from PDF ---
 def extract_text_from_pdf(uploaded_file):
     try:
-        text = pdf_extract_text(uploaded_file)
+        text = extract_text_from_pdf(uploaded_file)
         return text
     except Exception as e:
         st.error(f"Error extracting text from PDF: {e}")
@@ -57,7 +58,7 @@ def extract_text_from_pdf(uploaded_file):
 # --- Function to Extract Text from DOCX ---
 def extract_text_from_docx(uploaded_file):
     try:
-        document = Document(uploaded_file) # Assuming Document is imported from docx
+        document = Document(uploaded_file)  # Assuming Document is imported from docx
         text = ""
         for paragraph in document.paragraphs:
             text += paragraph.text + "\n"
@@ -66,27 +67,40 @@ def extract_text_from_docx(uploaded_file):
         st.error(f"Error extracting text from DOCX: {e}")
         return None
 
-# --- Text Preprocessing Function with Progress Bar ---
-def preprocess_text_with_progress(data_df):
-    processed_texts = []
+# --- Text Preprocessing Function with Intermediate Results ---
+def preprocess_text_with_intermediate(data_df):
+    processed_results = []
     if 'text' in data_df.columns:
         with st.spinner("Preprocessing 'text' column... This might take a moment."):
             progress_bar = st.progress(0)
             status_text = st.empty()
             total_rows = len(data_df)
             for i, text in enumerate(data_df['text'].fillna('')):
+                intermediate = {}
                 if isinstance(text, str):
-                    text = text.translate(str.maketrans('', '', string.punctuation))
-                    text = re.sub(r'[^\w\s]', '', text).lower()
+                    intermediate['original'] = text
+                    # Symbol Removal
+                    symbol_removed = text.translate(str.maketrans('', '', string.punctuation))
+                    symbol_removed = re.sub(r'[^\w\s]', '', symbol_removed)
+                    intermediate['symbol_removed'] = symbol_removed
+                    # Case Folding
+                    case_folded = symbol_removed.lower()
+                    intermediate['case_folded'] = case_folded
+                    # Stopwords Removal
                     stop_words = set(stopwords.words('english'))
-                    word_tokens = word_tokenize(text)
-                    filtered_words = [PorterStemmer().stem(w) for w in word_tokens if w not in stop_words]
-                    processed_texts.append(" ".join(filtered_words))
+                    word_tokens = word_tokenize(case_folded)
+                    filtered = [w for w in word_tokens if w not in stop_words]
+                    intermediate['stopwords_removed'] = " ".join(filtered)
+                    # Stemming
+                    porter = PorterStemmer()
+                    stemmed = [porter.stem(w) for w in filtered]
+                    intermediate['stemmed'] = " ".join(stemmed)
+                    processed_results.append(intermediate)
                 else:
-                    processed_texts.append("")
+                    processed_results.append({'original': '', 'symbol_removed': '', 'case_folded': '', 'stopwords_removed': '', 'stemmed': ''})
                 progress_bar.progress((i + 1) / total_rows)
                 status_text.text(f"Processed {i + 1}/{total_rows} entries.")
-            data_df['processed_text'] = processed_texts
+            data_df['processed_results'] = processed_results
             st.success("Preprocessing of 'text' column complete!")
             progress_bar.empty()
             status_text.empty()
@@ -137,52 +151,20 @@ def generate_embeddings_with_progress(_model, texts):
         st.error(f"Error generating embeddings: {e}")
         return np.array([])
 
-# --- Main Dashboard ---
-st.title('Exploratory Data Analysis of Job Data')
-
-# --- Sidebar for CV Upload ---
-with st.sidebar:
-    st.header("Upload Your CV")
-    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
-    cv_text = ""
-    if uploaded_cv is not None:
-        file_extension = uploaded_cv.name.split(".")[-1].lower()
-        if file_extension == "pdf":
-            cv_text = extract_text_from_pdf(uploaded_cv)
-        elif file_extension == "docx":
-            cv_text = extract_text_from_docx(uploaded_cv)
-        st.success("CV uploaded successfully!")
-        if cv_text:
-            st.subheader("Uploaded CV Content (Preview)")
-            st.text_area("CV Text", cv_text, height=300)
-
-# Load data
-data = load_data_from_url(DATA_URL)
-
-if data is not None:
-    st.subheader('Data Preview')
-    st.dataframe(data.head(), use_container_width=True)
-
-    # --- Preprocess 'text' column with progress bar ---
-    data = preprocess_text_with_progress(data)
-
-    # --- Generate Embeddings for 'processed_text' column ---
-    st.subheader("Generating Embeddings for 'processed_text' column")
-    bert_model = load_bert_model()
-    job_text_embeddings = None
-
-    if bert_model is not None and 'processed_text' in data.columns:
-        texts_to_embed = data['processed_text'].fillna('').tolist()
-        if texts_to_embed:
-            job_text_embeddings = generate_embeddings_with_progress(bert_model, texts_to_embed)
-
-            if job_text_embeddings.size > 0:
-                st.write("Embeddings generated successfully!")
-                st.subheader(f"Clustering the Embeddings (K={N_CLUSTERS})")
-                @st.cache_data
-                def cluster_embeddings(embeddings, n_clusters):
-                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
-                    clusters
+@st.cache_data
+def cluster_embeddings_with_progress(embeddings, n_clusters):
+    """Clusters embeddings using KMeans and displays a progress bar."""
+    if embeddings is None or embeddings.size == 0:
+        st.warning("No embeddings to cluster.")
+        return None
+    try:
+        with st.spinner(f"Clustering embeddings into {n_clusters} clusters..."):
+            cluster_progress_bar = st.progress(0)
+            cluster_status_text = st.empty()
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+            clusters = kmeans.fit_predict(embeddings)
+            st.success(f"Clustering complete!")
+            cluster_
 '''
 import streamlit as st
 import pandas as pd
