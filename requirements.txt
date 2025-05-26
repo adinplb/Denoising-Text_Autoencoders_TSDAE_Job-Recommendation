@@ -12,3 +12,4 @@ pdfminer.six
 python-docx
 plotly
 umap-learn
+kaggle
