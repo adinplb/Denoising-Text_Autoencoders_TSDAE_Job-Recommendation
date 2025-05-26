@@ -1,3 +1,4 @@
+'''
 import streamlit as st
 import pandas as pd
 from pdfminer.high_level import extract_text as pdf_extract_text
@@ -110,3 +111,94 @@ if normalized_cv_embedding is not None and normalized_job_embeddings is not None
     st.write(f"Average Similarity: {avg_similarity:.4f}")
     st.write(f"Maximum Similarity: {max_similarity:.4f}")
     st.write(f"Minimum Similarity: {min_similarity:.4f}")
+'''
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.preprocessing import normalize
+import plotly.express as px
+import umap
+
+# --- Constants ---
+JOB_DATA_URL = "https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv"
+
+# --- Data Loading ---
+@st.cache_data
+def load_job_data(url):
+    try:
+        df = pd.read_csv(url)
+        if 'text' in df.columns and 'Title' in df.columns:
+            return df[['Job.ID', 'text', 'Title']].rename(columns={'text': 'description', 'Title': 'title'})
+        else:
+            st.error("Error: 'text' and 'Title' columns not found in the job data.")
+            return None
+    except Exception as e:
+        st.error(f"Error loading data from {url}: {e}")
+        return None
+
+job_df = load_job_data(JOB_DATA_URL)
+
+# --- Sidebar for CV Upload ---
+with st.sidebar:
+    st.header("Upload Your CV")
+    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
+    if uploaded_cv:
+        st.success("CV uploaded successfully!")
+
+# --- Main Dashboard ---
+st.title("Job Posting Embedding Visualization (UMAP)")
+
+if job_df is not None:
+    st.subheader("Job Data Preview")
+    st.dataframe(job_df.head())
+
+    # --- Embedding Generation ---
+    @st.cache_resource
+    def load_bert_model(model_name="all-mpnet-base-v2"):
+        model = SentenceTransformer(model_name)
+        return model
+
+    @st.cache_data
+    def generate_job_embeddings(df, model):
+        if df is not None and 'description' in df.columns:
+            job_descriptions = df['description'].fillna('').tolist()
+            embeddings = model.encode(job_descriptions, convert_to_tensor=True).cpu().numpy()
+            normalized_embeddings = normalize(embeddings)
+            return normalized_embeddings
+        return None
+
+    bert_model = load_bert_model()
+    job_embeddings = generate_job_embeddings(job_df, bert_model)
+
+    if job_embeddings is not None:
+        st.subheader("Job Posting Embeddings (Normalized - Preview)")
+        st.write(job_embeddings[:5])  # Display a snippet of the embeddings
+
+        # --- Visualization of Embeddings (using UMAP for dimensionality reduction to 3D) ---
+        st.subheader("Visualize Job Posting Embeddings (UMAP 3D)")
+        @st.cache_data
+        def reduce_dimensionality_umap(embeddings, n_components=3, n_neighbors=15, min_dist=0.1):
+            reducer = umap.UMAP(n_components=n_components, n_neighbors=n_neighbors, min_dist=min_dist, random_state=42)
+            reduced_embeddings = reducer.fit_transform(embeddings)
+            return reduced_embeddings
+
+        reduced_embeddings_umap = reduce_dimensionality_umap(job_embeddings)
+
+        fig_umap = px.scatter_3d(
+            job_df,
+            x=reduced_embeddings_umap[:, 0],
+            y=reduced_embeddings_umap[:, 1],
+            z=reduced_embeddings_umap[:, 2],
+            hover_data=['title', 'description'],
+            title='3D Visualization of Job Posting Embeddings (UMAP)'
+        )
+        st.plotly_chart(fig_umap)
+    else:
+        st.info("Job embeddings could not be generated.")
+
+else:
+    st.info("Job data not loaded. Please ensure the URL is correct.")
+
+
