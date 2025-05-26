@@ -49,6 +49,7 @@ download_nltk_resources()
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
 RELEVANT_FEATURES = ['Job.ID', 'text', 'Title']
 N_CLUSTERS = 20 # Default number of clusters for KMeans
+ANNOTATORS = ["Annotator 1", "Annotator 2", "Annotator 3", "Annotator 4", "Annotator 5"]
 
 
 # --- Global Data Storage (using Streamlit Session State) ---
@@ -67,6 +68,10 @@ if 'cv_embedding' not in st.session_state: # Kept for single CV context if neede
     st.session_state['cv_embedding'] = None
 if 'uploaded_cvs_data' not in st.session_state: # New: stores list of {'filename', 'text', 'embedding'} for multiple CVs
     st.session_state['uploaded_cvs_data'] = []
+if 'all_recommendations_for_annotation' not in st.session_state: # Stores recommendations for annotation page
+    st.session_state['all_recommendations_for_annotation'] = {} # Format: {cv_filename: DataFrame of top 20 recs}
+if 'collected_annotations' not in st.session_state: # Stores collected annotations
+    st.session_state['collected_annotations'] = pd.DataFrame()
 
 
 # --- Helper Functions ---
@@ -571,6 +576,8 @@ def job_recommendation_page():
         job_clusters = st.session_state['job_clusters']
 
         if st.button("Generate Recommendations for All Uploaded CVs"):
+            st.session_state['all_recommendations_for_annotation'] = {} # Clear previous recs
+
             for i, cv_data in enumerate(st.session_state['uploaded_cvs_data']):
                 cv_filename = cv_data['filename']
                 cv_embedding = cv_data['embedding']
@@ -591,6 +598,7 @@ def job_recommendation_page():
 
                     if not recommended_jobs.empty:
                         st.dataframe(recommended_jobs[['Job.ID', 'Title', 'similarity_score', 'cluster', 'text']], use_container_width=True)
+                        st.session_state['all_recommendations_for_annotation'][cv_filename] = recommended_jobs # Store for annotation
                     else:
                         st.info(f"No job recommendations found for {cv_filename}.")
                     st.write("---") # Separator for clarity
@@ -601,6 +609,72 @@ def job_recommendation_page():
     else:
         st.info("Please upload your CV(s) and process job data/embeddings/clusters to get recommendations.")
 
+def annotation_page():
+    st.header("Annotation")
+    st.write("Annotate the relevance of the top 20 job recommendations for each CV.")
+
+    if not st.session_state['all_recommendations_for_annotation']:
+        st.warning("No recommendations available for annotation. Please generate recommendations on the 'Job Recommendation' page first.")
+        return
+
+    st.subheader("Annotation Form")
+    all_annotations_data = []
+    
+    for cv_filename, recommendations_df in st.session_state['all_recommendations_for_annotation'].items():
+        st.markdown(f"### Annotate Recommendations for CV: **{cv_filename}**")
+        
+        for idx, row in recommendations_df.iterrows():
+            st.write(f"**Job ID:** {row['Job.ID']}")
+            st.write(f"**Title:** {row['Title']}")
+            st.write(f"**Description:** {row['text']}")
+            st.write(f"**Similarity Score:** {row['similarity_score']:.4f}")
+            st.write(f"**Cluster:** {row['cluster']}")
+            
+            annotation_row_data = {
+                'cv_filename': cv_filename,
+                'job_id': row['Job.ID'],
+                'job_title': row['Title'],
+                'job_text': row['text'],
+                'similarity_score': row['similarity_score'],
+                'cluster': row['cluster']
+            }
+
+            cols = st.columns(len(ANNOTATORS))
+            for i, annotator in enumerate(ANNOTATORS):
+                with cols[i]:
+                    # Numerical input (Relevant/Not Relevant)
+                    relevance = st.radio(
+                        f"{annotator} - Relevant?",
+                        options=["Relevant", "Not Relevant"],
+                        key=f"relevance_{cv_filename}_{row['Job.ID']}_{annotator}"
+                    )
+                    annotation_row_data[f'annotator_{i+1}_relevance'] = 1 if relevance == "Relevant" else 0
+                    
+                    # Qualitative input (Text area)
+                    qualitative_feedback = st.text_area(
+                        f"{annotator} - Feedback",
+                        key=f"feedback_{cv_filename}_{row['Job.ID']}_{annotator}",
+                        height=50
+                    )
+                    annotation_row_data[f'annotator_{i+1}_feedback'] = qualitative_feedback
+            
+            all_annotations_data.append(annotation_row_data)
+            st.markdown("---") # Separator for each job
+
+    if st.button("Submit All Annotations"):
+        st.session_state['collected_annotations'] = pd.DataFrame(all_annotations_data)
+        st.success("Annotations submitted successfully!")
+        st.subheader("Collected Annotations Preview")
+        st.dataframe(st.session_state['collected_annotations'], use_container_width=True)
+        
+        # Optional: Save annotations to CSV
+        csv_buffer = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download All Annotations as CSV",
+            data=csv_buffer,
+            file_name="job_recommendation_annotations.csv",
+            mime="text/csv",
+        )
 
 def upload_cv_page():
     st.header("Upload CV(s)")
@@ -667,7 +741,7 @@ def upload_cv_page():
 
 # --- Main App Logic (Page Navigation) ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Home", "Preprocessing", "TSDAE (Noise Injection)", "BERT Model", "Clustering Job2Vec", "Job Recommendation", "Upload CV"])
+page = st.sidebar.radio("Go to", ["Home", "Preprocessing", "TSDAE (Noise Injection)", "BERT Model", "Clustering Job2Vec", "Job Recommendation", "Annotation", "Upload CV"])
 
 if page == "Home":
     home_page()
@@ -681,5 +755,7 @@ elif page == "Clustering Job2Vec":
     clustering_page()
 elif page == "Job Recommendation":
     job_recommendation_page()
+elif page == "Annotation":
+    annotation_page()
 elif page == "Upload CV":
     upload_cv_page()
