@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import os
+from pdfminer.high_level import extract_text as pdf_extract_text
+from docx import Document as DocxDocument
 
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
@@ -19,8 +21,45 @@ def load_data_from_url(url):
         st.error(f'Error loading data from URL: {e}')
         return None
 
+# --- Function to Extract Text from PDF ---
+def extract_text_from_pdf(uploaded_file):
+    try:
+        text = pdf_extract_text(uploaded_file)
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text from PDF: {e}")
+        return None
+
+# --- Function to Extract Text from DOCX ---
+def extract_text_from_docx(uploaded_file):
+    try:
+        document = DocxDocument(uploaded_file)
+        text = ""
+        for paragraph in document.paragraphs:
+            text += paragraph.text + "\n"
+        return text
+    except Exception as e:
+        st.error(f"Error extracting text from DOCX: {e}")
+        return None
+
 # --- Main Dashboard ---
 st.title('Exploratory Data Analysis of Job Data')
+
+# --- Sidebar for CV Upload ---
+with st.sidebar:
+    st.header("Upload Your CV")
+    uploaded_cv = st.file_uploader("Choose a PDF or DOCX file", type=["pdf", "docx"])
+    cv_text = ""
+    if uploaded_cv is not None:
+        file_extension = uploaded_cv.name.split(".")[-1].lower()
+        if file_extension == "pdf":
+            cv_text = extract_text_from_pdf(uploaded_cv)
+        elif file_extension == "docx":
+            cv_text = extract_text_from_docx(uploaded_cv)
+        st.success("CV uploaded successfully!")
+        if cv_text:
+            st.subheader("Uploaded CV Content (Preview)")
+            st.text_area("CV Text", cv_text, height=300)
 
 data = load_data_from_url(DATA_URL)
 
