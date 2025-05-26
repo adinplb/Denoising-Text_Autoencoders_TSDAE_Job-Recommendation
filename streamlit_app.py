@@ -199,4 +199,3 @@ if job_df is not None:
 
 else:
     st.info("Job data not loaded. Please ensure the URL is correct.")
-
