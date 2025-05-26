@@ -254,7 +254,6 @@ if uploaded_cv is not None:
     else:
         st.warning("Could not extract text from the uploaded CV. Please try a different file.")
 
-
 # --- Clustering the Embeddings ---
 @st.cache_data
 def cluster_embeddings(embeddings, n_clusters=5):
