@@ -68,19 +68,19 @@ def load_bert_model(model_name="all-mpnet-base-v2"):
     return model
 
 @st.cache_data
-def generate_embeddings(texts, model):
-    embeddings = model.encode(texts, convert_to_tensor=True)
+def generate_embeddings(_model, texts):
+    embeddings = _model.encode(texts, convert_to_tensor=True)
     return embeddings.cpu().numpy()
 
 bert_model = load_bert_model()
 
 if job_df is not None and 'description' in job_df.columns:
     job_descriptions = job_df['description'].fillna('').tolist()
-    job_embeddings = generate_embeddings(job_descriptions, bert_model)
+    job_embeddings = generate_embeddings(bert_model, job_descriptions) # Pass bert_model as the first argument
     normalized_job_embeddings = normalize(job_embeddings)
 
 if cv_text:
-    cv_embedding = generate_embeddings([cv_text], bert_model)[0]
+    cv_embedding = generate_embeddings(bert_model, [cv_text])[0] # Pass bert_model as the first argument
     normalized_cv_embedding = normalize(cv_embedding.reshape(1, -1))
 
 
