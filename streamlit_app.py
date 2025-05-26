@@ -11,32 +11,45 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import PorterStemmer
 import nltk
-from tqdm import tqdm  # Import tqdm for progress bar (for local testing visibility)
+from tqdm import tqdm  # Used for local progress bar simulation, not directly visible in Streamlit's st.progress
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
 import random
 from nltk.tokenize.treebank import TreebankWordDetokenizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-# Download necessary NLTK resources (run once)
-try:
-    stopwords.words('english')
-except LookupError:
-    nltk.download('stopwords')
-try:
-    word_tokenize("example")
-except LookupError:
-    nltk.download('punkt')
-try:
-    nltk.data.find('tokenizers/punkt/PY3/punkt_tab.pickle')
-except LookupError:
-    nltk.download('punkt_tab')
+# --- NLTK Resource Downloads ---
+# This block ensures necessary NLTK data is available when the app runs,
+# especially important for Streamlit Cloud deployments.
+@st.cache_resource
+def download_nltk_resources():
+    try:
+        stopwords.words('english')
+    except LookupError:
+        st.info("Downloading NLTK stopwords...")
+        nltk.download('stopwords')
+    try:
+        word_tokenize("example text")
+    except LookupError:
+        st.info("Downloading NLTK punkt tokenizer...")
+        nltk.download('punkt')
+    try:
+        nltk.data.find('tokenizers/punkt/PY3/punkt_tab.pickle')
+    except LookupError:
+        st.info("Downloading NLTK punkt_tab resource...")
+        nltk.download('punkt_tab')
+    st.success("NLTK resources checked/downloaded.")
+
+download_nltk_resources()
+
 
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/Denoising-Text_Autoencoders_TSDAE_Job-Recommendation/refs/heads/master/dataset/combined_jobs_2000.csv'
 RELEVANT_FEATURES = ['Job.ID', 'text', 'Title']
 N_CLUSTERS = 20 # Default number of clusters for KMeans
+
 
 # --- Global Data Storage (using Streamlit Session State) ---
 # This helps share data between pages without re-running heavy computations
@@ -50,6 +63,9 @@ if 'cv_text' not in st.session_state:
     st.session_state['cv_text'] = ""
 if 'tsdae_embeddings' not in st.session_state:
     st.session_state['tsdae_embeddings'] = None
+if 'cv_embedding' not in st.session_state:
+    st.session_state['cv_embedding'] = None
+
 
 # --- Helper Functions ---
 @st.cache_data(show_spinner='Loading data...')
@@ -84,6 +100,29 @@ def extract_text_from_docx(uploaded_file):
         st.error(f"Error extracting text from DOCX: {e}")
         return None
 
+# --- Standalone Text Preprocessing Function (for individual text like CV) ---
+def preprocess_text(text):
+    """
+    Performs text preprocessing steps: symbol removal, case folding, tokenization,
+    stopwords removal, and stemming.
+    """
+    if isinstance(text, str):
+        # Symbol Removal
+        text = text.translate(str.maketrans('', '', string.punctuation))
+        text = re.sub(r'[^\w\s]', '', text)
+        # Case Folding
+        text = text.lower()
+        # Stopwords Removal and Tokenization
+        stop_words = set(stopwords.words('english'))
+        word_tokens = word_tokenize(text)
+        filtered_words = [w for w in word_tokens if w not in stop_words]
+        # Stemming
+        porter = PorterStemmer()
+        stemmed_words = [porter.stem(w) for w in filtered_words]
+        return " ".join(stemmed_words)
+    return ""
+
+# --- Text Preprocessing Function with Intermediate Results and Progress Bar ---
 def preprocess_text_with_intermediate(data_df):
     """
     Performs text preprocessing steps (symbol removal, case folding, tokenization,
@@ -135,6 +174,7 @@ def preprocess_text_with_intermediate(data_df):
         st.warning("The 'text' column was not found in the dataset.")
     return data_df
 
+# --- Text Denoising Function ---
 def denoise_text(text, method='a', del_ratio=0.6, word_freq_dict=None, freq_threshold=100):
     """
     Applies noise to text based on specified method for TSDAE.
@@ -177,6 +217,7 @@ def denoise_text(text, method='a', del_ratio=0.6, word_freq_dict=None, freq_thre
         raise ValueError("Unknown denoising method. Use 'a', 'b', or 'c'.")
     return TreebankWordDetokenizer().detokenize(result)
 
+# --- Embedding Generation Functions ---
 @st.cache_resource
 def load_bert_model(model_name="all-MiniLM-L6-v2"):
     """Loads the SentenceTransformer model (cached)."""
@@ -203,7 +244,7 @@ def generate_embeddings_with_progress(_model, texts):
             embedding_status_text = st.empty()
             embeddings = []
             total_texts = len(texts)
-            batch_size = 32
+            batch_size = 32 # Adjust based on your model and memory
             for i in range(0, total_texts, batch_size):
                 batch_texts = texts[i:i + batch_size]
                 batch_embeddings = _model.encode(batch_texts, convert_to_tensor=True)
@@ -229,8 +270,6 @@ def cluster_embeddings_with_progress(embeddings, n_clusters):
         with st.spinner(f"Clustering embeddings into {n_clusters} clusters..."):
             # KMeans doesn't have a built-in progress callback, so we simulate it
             # by showing a spinner for the entire operation.
-            # For very large datasets, you might need a custom KMeans implementation
-            # or a library that supports progress.
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
             clusters = kmeans.fit_predict(embeddings)
             st.success(f"Clustering complete!")
@@ -392,9 +431,9 @@ def tsdae_page():
 
             if final_noisy_embeddings.size > 0:
                 st.session_state['tsdae_embeddings'] = final_noisy_embeddings
-                st.subheader("Final TSDAE Embeddings (Preview)")
-                st.write("Shape of final TSDAE embeddings:", final_noisy_embeddings.shape)
-                st.write("Preview of the first 3 final TSDAE embeddings:")
+                st.subheader("Combined TSDAE Embeddings (Preview)")
+                st.write("Shape of combined embeddings:", final_noisy_embeddings.shape)
+                st.write("Preview of the first 3 combined embeddings:")
                 st.write(final_noisy_embeddings[:3])
             else:
                 st.warning("Failed to generate embeddings for the final noisy text.")
@@ -497,6 +536,63 @@ def clustering_page():
         st.warning("No embeddings available for clustering.")
 
 
+def job_recommendation_page():
+    st.header("Job Recommendation")
+    st.write("This page provides job recommendations based on your uploaded CV and the clustered job postings.")
+
+    # --- CV Upload (re-display from sidebar for context if needed, but the main upload is in sidebar) ---
+    st.subheader("Your Uploaded CV")
+    if st.session_state['cv_text']:
+        st.text_area("CV Content", st.session_state['cv_text'], height=200, disabled=True)
+    else:
+        st.info("Please upload your CV on the 'Upload CV' page first.")
+        return
+
+    # --- Job Recommendation Logic ---
+    if st.session_state['job_clusters'] is not None and st.session_state['cv_embedding'] is not None and st.session_state['data'] is not None:
+        st.subheader("Job Recommendations")
+        
+        # Determine which job embeddings to use for similarity matching
+        job_embeddings_for_similarity = None
+        if st.session_state['tsdae_embeddings'] is not None:
+            job_embeddings_for_similarity = st.session_state['tsdae_embeddings']
+            st.info("Using TSDAE embeddings for recommendation.")
+        elif st.session_state['job_text_embeddings'] is not None:
+            job_embeddings_for_similarity = st.session_state['job_text_embeddings']
+            st.info("Using standard BERT embeddings for recommendation.")
+        else:
+            st.warning("No job embeddings available for recommendation. Please generate them on 'BERT Model' or 'TSDAE' page.")
+            return
+
+        data = st.session_state['data']
+        job_clusters = st.session_state['job_clusters']
+        cv_embedding = st.session_state['cv_embedding']
+
+        # Calculate cosine similarity between CV embedding and all job embeddings
+        # Ensure CV embedding is 2D for cosine_similarity
+        cv_embedding_2d = cv_embedding.reshape(1, -1) if cv_embedding.ndim == 1 else cv_embedding
+        
+        similarities = cosine_similarity(cv_embedding_2d, job_embeddings_for_similarity)[0]
+        data['similarity_score'] = similarities
+        
+        # Sort and get top recommendations
+        recommended_jobs = data.sort_values(by='similarity_score', ascending=False).head(20)
+
+        if not recommended_jobs.empty:
+            st.dataframe(recommended_jobs[['Job.ID', 'Title', 'similarity_score', 'cluster', 'text']], use_container_width=True)
+        else:
+            st.info("No job recommendations found.")
+    elif st.session_state['cv_text'] and st.session_state['job_clusters'] is None:
+        st.info("Please cluster the job embeddings first on the 'Clustering Job2Vec' page to get cluster-based recommendations.")
+    elif st.session_state['cv_text'] and st.session_state['cv_embedding'] is None:
+        st.info("Generating CV embedding...")
+        # This part will be triggered by the CV upload in the upload_cv_page
+        # and the embedding will be stored in session_state.
+        # We don't re-generate here to avoid redundant computation.
+    else:
+        st.info("Please upload your CV and process job data/embeddings to get recommendations.")
+
+
 def upload_cv_page():
     st.header("Upload CV")
     st.write("Upload your CV in PDF or Word format.")
@@ -512,14 +608,31 @@ def upload_cv_page():
             if st.session_state['cv_text']:
                 st.subheader("Uploaded CV Content (Preview)")
                 st.text_area("CV Text", st.session_state['cv_text'], height=300)
+                
+                # Generate CV Embedding immediately after upload
+                bert_model = load_bert_model()
+                if bert_model:
+                    processed_cv_text = preprocess_text(st.session_state['cv_text'])
+                    st.session_state['cv_embedding'] = generate_embeddings_with_progress(bert_model, [processed_cv_text])[0]
+                    st.success("CV embedding generated!")
+                else:
+                    st.warning("BERT model not loaded. Cannot generate CV embedding.")
             else:
                 st.warning("Could not extract text from the uploaded CV.")
         except Exception as e:
             st.error(f"Error reading CV file: {e}")
+    elif st.session_state['cv_text']:
+        st.info("CV already uploaded:")
+        st.text_area("Current CV Content", st.session_state['cv_text'], height=200, disabled=True)
+        if st.session_state['cv_embedding'] is not None:
+            st.info("CV embedding already generated.")
+        else:
+            st.info("CV text available, but embedding not generated. Please ensure BERT model is loaded.")
+
 
 # --- Main App Logic (Page Navigation) ---
 st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to", ["Home", "Preprocessing", "TSDAE (Noise Injection)", "BERT Model", "Clustering Job2Vec", "Upload CV"])
+page = st.sidebar.radio("Go to", ["Home", "Preprocessing", "TSDAE (Noise Injection)", "BERT Model", "Clustering Job2Vec", "Job Recommendation", "Upload CV"])
 
 if page == "Home":
     home_page()
@@ -531,8 +644,7 @@ elif page == "BERT Model":
     bert_model_page()
 elif page == "Clustering Job2Vec":
     clustering_page()
+elif page == "Job Recommendation":
+    job_recommendation_page()
 elif page == "Upload CV":
     upload_cv_page()
-
-
-
