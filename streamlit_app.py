@@ -28,6 +28,20 @@ try:
     word_tokenize("example")
 except LookupError:
     nltk.download('punkt')
+try:
+    nltk.data.find('taggers/averaged_perceptron_tagger.zip') # Example of checking for another resource
+except LookupError:
+    nltk.download('averaged_perceptron_tagger') # You might need this or other taggers
+
+try:
+    nltk.data.find('tokenizers/punkt/PY3/english.pickle') # Check for punkt data
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('tokenizers/punkt/PY3/punkt_tab.pickle') # Check for punkt_tab data
+except LookupError:
+    nltk.download('punkt_tab')
 
 # --- Data Loading ---
 @st.cache_data
