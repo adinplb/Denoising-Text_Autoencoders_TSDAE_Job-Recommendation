@@ -75,7 +75,6 @@ if 'collected_annotations' not in st.session_state:
     st.session_state['collected_annotations'] = pd.DataFrame()
 if 'annotator_details' not in st.session_state:
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
-# For caching corpus embeddings during evaluation
 if 'corpus_embeddings_for_eval_cache' not in st.session_state:
     st.session_state['corpus_embeddings_for_eval_cache'] = {'ids': None, 'embeddings': None}
 
@@ -819,7 +818,12 @@ def evaluation_page():
     if anns_df.empty: st.warning("No annotations collected."); return
 
     st.subheader("Evaluation Parameters")
-    relevance_threshold_binary = st.slider("Binary Relevance Threshold (for P, R, MAP, MRR, Binary NDCG)", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary")
+    st.info(
+        "The 'Binary Relevance Threshold' is used for standard IR metrics (Precision, Recall, MAP, MRR, Binary NDCG) "
+        "from the `InformationRetrievalEvaluator`. It converts your graded (0-3) annotations into a binary "
+        "'relevant' (if average score >= threshold) or 'not-relevant' decision for these metrics."
+    )
+    relevance_threshold_binary = st.slider("Binary Relevance Threshold", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary")
     
     if st.button("Run Evaluation", key="run_eval_btn"):
         with st.spinner("Preparing data & running IR evaluation..."):
@@ -847,33 +851,42 @@ def evaluation_page():
             st.write(f"Info for Binary Metrics: Queries: {len(queries_dict)}, Corpus: {len(corpus_dict)}, CVs with binary relevant items: {len(relevant_docs_binary)}")
             
             eval_results_display = {}
+            binary_results_raw = {} # To store raw results from evaluator
             try:
                 k_values_for_eval = [1, 3, 5, 10, 20, 100] 
                 ir_evaluator = InformationRetrievalEvaluator(
                     queries=queries_dict, 
                     corpus=corpus_dict, 
                     relevant_docs=relevant_docs_binary, 
-                    name="job_rec_binary_eval", 
+                    name="job_rec_eval", # Simplified name
                     show_progress_bar=False, 
-                    # CORRECTED PARAMETER NAMES
                     precision_recall_at_k=k_values_for_eval,
-                    map_at_k=k_values_for_eval, # Assuming MAP@k is desired, if not, use mAP_at_k for mean Average Precision
+                    map_at_k=k_values_for_eval, 
                     ndcg_at_k=k_values_for_eval,
-                    mrr_at_k=k_values_for_eval
+                    mrr_at_k=k_values_for_eval 
                 )
-                binary_results = ir_evaluator(model_eval, output_path=None)
-                
-                # Construct metric names as returned by the evaluator
-                eval_name = ir_evaluator.name
-                eval_results_display['Precision@20'] = binary_results.get(f'{eval_name}_Precision@20', 'N/A')
-                eval_results_display['Recall@20'] = binary_results.get(f'{eval_name}_Recall@20', 'N/A')
-                eval_results_display['NDCG@20 (Binary)'] = binary_results.get(f'{eval_name}_NDCG@20', 'N/A')
-                eval_results_display['MRR@20'] = binary_results.get(f'{eval_name}_MRR@20', binary_results.get(f'{eval_name}_MRR@10', 'N/A')) # Fallback for MRR
-                eval_results_display['MAP@20'] = binary_results.get(f'{eval_name}_MAP@20', binary_results.get(f'{eval_name}_MAP@100', 'N/A')) # Fallback for MAP
+                binary_results_raw = ir_evaluator(model_eval, output_path=None)
+                # st.write("Raw binary_results from evaluator:", binary_results_raw) # For debugging
 
+                # Extract desired metrics @20
+                eval_results_display['Precision@20'] = binary_results_raw.get('job_rec_eval_P@20', 'N/A')
+                eval_results_display['Recall@20'] = binary_results_raw.get('job_rec_eval_R@20', 'N/A') # Note: Recall might be 'Recall@k' or 'R@k'
+                eval_results_display['NDCG@20 (Binary)'] = binary_results_raw.get('job_rec_eval_NDCG@20', 'N/A')
+                eval_results_display['MRR@20'] = binary_results_raw.get('job_rec_eval_MRR@20', binary_results_raw.get('job_rec_eval_MRR@10', 'N/A')) 
+                eval_results_display['MAP@20'] = binary_results_raw.get('job_rec_eval_MAP@20', binary_results_raw.get('job_rec_eval_MAP@100', 'N/A'))
+
+                # Check for alternative recall key if P@k and R@k are not standard
+                if eval_results_display['Recall@20'] == 'N/A':
+                     eval_results_display['Recall@20'] = binary_results_raw.get('job_rec_eval_Recall@20', 'N/A')
+
+
+            except TypeError as te:
+                 st.error(f"TypeError during InformationRetrievalEvaluator initialization or call: {te}")
+                 st.info("This might be due to a mismatch in expected parameter names for the evaluator based on the sentence-transformers version. Common parameters are 'precision_recall_at_k', 'ndcg_at_k', 'map_at_k', 'mrr_at_k'.")
+                 st.exception(te)
             except Exception as e_ir_eval: 
                 st.error(f"Error during InformationRetrievalEvaluator run: {e_ir_eval}")
-                st.exception(e_ir_eval) # Show full traceback
+                st.exception(e_ir_eval)
             
             all_graded_ndcg_at_20 = []
             corpus_texts_list_for_graded = list(corpus_dict.values())
@@ -892,6 +905,8 @@ def evaluation_page():
                 cos_scores = cosine_similarity(query_embedding.reshape(1,-1), corpus_embeddings_graded)[0]
                 
                 k_for_ndcg = min(20, len(corpus_ids_list_for_graded))
+                if k_for_ndcg == 0 : continue # Skip if corpus is empty
+
                 top_k_indices = np.argsort(cos_scores)[::-1][:k_for_ndcg]
                 
                 ranked_job_ids = [corpus_ids_list_for_graded[i] for i in top_k_indices]
@@ -909,8 +924,11 @@ def evaluation_page():
                 if len(true_relevance_graded) > 0:
                     model_pred_scores_for_ranked_items = cos_scores[top_k_indices]
                     if len(true_relevance_graded) == len(model_pred_scores_for_ranked_items):
-                        ndcg_val = ndcg_score([true_relevance_graded], [model_pred_scores_for_ranked_items], k=k_for_ndcg)
-                        all_graded_ndcg_at_20.append(ndcg_val)
+                        # Ensure k for ndcg_score doesn't exceed the number of items
+                        current_k = min(k_for_ndcg, len(true_relevance_graded))
+                        if current_k > 0:
+                             ndcg_val = ndcg_score([true_relevance_graded], [model_pred_scores_for_ranked_items], k=current_k)
+                             all_graded_ndcg_at_20.append(ndcg_val)
             
             if all_graded_ndcg_at_20:
                 eval_results_display['NDCG@20 (Graded Avg Annotator Score)'] = np.mean(all_graded_ndcg_at_20)
@@ -918,32 +936,43 @@ def evaluation_page():
                 eval_results_display['NDCG@20 (Graded Avg Annotator Score)'] = 'N/A'
             
             st.subheader("Evaluation Metrics Summary")
-            # Display metrics using st.metric in columns
-            # Define a helper for consistent formatting and handling N/A
-            def display_metric(label, value, col):
-                try:
-                    val_str = f"{float(value):.4f}" if isinstance(value, (int, float, np.number)) and value != 'N/A' else str(value)
-                except (ValueError, TypeError):
-                    val_str = str(value)
-                
-                # Example delta color logic (can be customized)
-                delta_c = "normal"
-                if "Precision" in label or "Recall" in label: delta_c = "off"
-                elif "NDCG" in label: delta_c = "inverse"
-                
-                col.metric(label=label, value=val_str, delta_color=delta_c)
-
-            # Create columns for layout (e.g., 3 metrics per row)
-            num_metrics = len(eval_results_display)
-            cols_per_row = 3
             
-            metric_items = list(eval_results_display.items())
-            for i in range(0, num_metrics, cols_per_row):
-                metric_cols = st.columns(cols_per_row)
-                for j in range(cols_per_row):
-                    if i + j < num_metrics:
-                        label, value = metric_items[i+j]
-                        display_metric(label, value, metric_cols[j])
+            metric_layout = {
+                'Precision@20': {'col_idx': 0, 'delta_color': 'off', 'format_percent': True, 'help': "Proportion of recommended items in the top 20 that are relevant."},
+                'Recall@20': {'col_idx': 1, 'delta_color': 'off', 'format_percent': True, 'help': "Proportion of all relevant items that are in the top 20 recommendations."},
+                'MAP@20': {'col_idx': 2, 'delta_color': 'off', 'format_percent': True, 'help': "Mean Average Precision at 20. Considers the order of relevant items."},
+                'MRR@20': {'col_idx': 0, 'delta_color': 'normal', 'format_percent': False, 'help': "Mean Reciprocal Rank at 20. Focuses on the rank of the first relevant item."},
+                'NDCG@20 (Binary)': {'col_idx': 1, 'delta_color': 'inverse', 'format_percent': False, 'help': "Normalized Discounted Cumulative Gain at 20 (Binary relevance from threshold)."},
+                'NDCG@20 (Graded Avg Annotator Score)': {'col_idx': 2, 'delta_color': 'inverse', 'format_percent': False, 'help': "Normalized Discounted Cumulative Gain at 20 (Using average annotator scores as relevance weights)."}
+            }
+            
+            # Determine number of rows needed for st.columns
+            num_metrics_to_display = len(metric_layout)
+            cols_per_row_display = 3
+            
+            metric_keys_ordered = [
+                'Precision@20', 'Recall@20', 'MAP@20', 
+                'MRR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded Avg Annotator Score)'
+            ]
+
+            row1_cols = st.columns(cols_per_row_display)
+            row2_cols = st.columns(cols_per_row_display)
+
+            for idx, label in enumerate(metric_keys_ordered):
+                value = eval_results_display.get(label, 'N/A')
+                config = metric_layout[label]
+                
+                current_col = row1_cols[idx % cols_per_row_display] if idx < cols_per_row_display else row2_cols[idx % cols_per_row_display]
+
+                try:
+                    if value != 'N/A' and isinstance(value, (int, float, np.number)):
+                        val_to_display = f"{value*100:.2f}%" if config['format_percent'] else f"{float(value):.4f}"
+                    else:
+                        val_to_display = str(value)
+                except (ValueError, TypeError):
+                    val_to_display = str(value)
+                
+                current_col.metric(label=label, value=val_to_display, delta_color=config['delta_color'], help=config['help'])
     return
 
 # --- Main App Logic (Page Navigation) ---
