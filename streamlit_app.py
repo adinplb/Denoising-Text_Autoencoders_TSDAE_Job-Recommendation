@@ -243,10 +243,10 @@ def cluster_embeddings_with_progress(embeddings_to_cluster_param, n_clusters_for
     if n_clusters_for_algo < 1 : 
          st.error("Not enough samples to cluster (K < 1).")
          return None
-    if n_clusters_for_algo == 1 and embeddings_to_cluster_param.shape[0] > 1 : # KMeans needs K>=2 if n_samples > 1
+    if n_clusters_for_algo == 1 and embeddings_to_cluster_param.shape[0] > 1 : 
         st.warning(f"K=1 requested for >1 samples. Setting K=2 for meaningful clustering.")
         n_clusters_for_algo = 2
-    elif embeddings_to_cluster_param.shape[0] == 1 and n_clusters_for_algo >1: # If only 1 sample, K must be 1
+    elif embeddings_to_cluster_param.shape[0] == 1 and n_clusters_for_algo >1: 
         st.warning(f"Only 1 sample available. Setting K=1.")
         n_clusters_for_algo = 1
 
@@ -302,7 +302,7 @@ def home_page():
                 st.write(data_df[selected_feature].value_counts().nlargest(20))
     else:
         st.error("Data could not be loaded. Check source/network.")
-    return # Explicit return
+    return
 
 def preprocessing_page():
     st.header("Preprocessing Job Descriptions")
@@ -493,7 +493,9 @@ def upload_cv_page():
         if st.button("Process Uploaded CVs", key="proc_cv_btn"):
             cv_data_batch = []
             bert_model_for_cv = load_bert_model()
-            if not bert_model_for_cv: st.error("BERT model load failed for CVs."); return
+            if not bert_model_for_cv: 
+                st.error("BERT model load failed for CVs.")
+                return # Exit if model not loaded
             with st.spinner("Processing CVs..."):
                 cv_prog_bar = st.progress(0)
                 cv_stat_txt = st.empty()
@@ -503,32 +505,54 @@ def upload_cv_page():
                         file_ext = cv_file.name.split(".")[-1].lower()
                         if file_ext == "pdf": o_txt = extract_text_from_pdf(cv_file)
                         elif file_ext == "docx": o_txt = extract_text_from_docx(cv_file)
+                        
                         if o_txt and o_txt.strip():
                             p_txt = preprocess_text(o_txt)
                             if p_txt and p_txt.strip():
                                 e_arr = generate_embeddings_with_progress(bert_model_for_cv, [p_txt])
+                                # Ensure e_arr is not None and has elements before accessing e_arr[0]
                                 cv_e = e_arr[0] if (e_arr is not None and e_arr.size > 0) else None
-                            else: st.warning(f"Processed text for {cv_file.name} empty.")
-                        else: st.warning(f"Extracted text for {cv_file.name} empty.")
-                        cv_data_batch.append({'filename':cv_file.name, 'original_text':o_txt or "", 'processed_text':p_txt or "", 'embedding':cv_e})
-                        if cv_e: st.success(f"Processed & embedded: {cv_file.name}")
-                        elif p_txt: st.warning(f"Processed {cv_file.name}, embedding failed.")
+                            else: 
+                                st.warning(f"Processed text for {cv_file.name} is empty.")
+                        else: 
+                            st.warning(f"Extracted text for {cv_file.name} is empty.")
+                        
+                        cv_data_batch.append({'filename':cv_file.name, 'original_text':o_txt or "", 
+                                              'processed_text':p_txt or "", 'embedding':cv_e})
+                        
+                        # CORRECTED LOGIC FOR DISPLAYING SUCCESS/FAILURE
+                        if cv_e is not None and cv_e.size > 0: # Check if cv_e is a non-empty array
+                            st.success(f"Processed & embedded: {cv_file.name}")
+                        elif p_txt: # This means text was processed but embedding (cv_e) is None or empty
+                            st.warning(f"Processed {cv_file.name}, but embedding failed or resulted in empty array.")
+                        # else: (No original text or no processed text) - already warned above
+
                     except Exception as e:
                         st.error(f"Error with {cv_file.name}: {e}")
-                        cv_data_batch.append({'filename':cv_file.name, 'original_text':"Error", 'processed_text':"", 'embedding':None})
-                    if uploaded_cv_files: cv_prog_bar.progress((i+1)/len(uploaded_cv_files))
+                        cv_data_batch.append({'filename':cv_file.name, 'original_text':"Error in processing", 
+                                              'processed_text':"", 'embedding':None}) # Log error case
+                    
+                    if uploaded_cv_files: # Check if list is not empty before division
+                        cv_prog_bar.progress((i+1)/len(uploaded_cv_files))
                     cv_stat_txt.text(f"Done: {i+1}/{len(uploaded_cv_files)}")
+
                 st.session_state['uploaded_cvs_data'] = cv_data_batch
-                cv_prog_bar.empty(); cv_stat_txt.empty()
+                cv_prog_bar.empty()
+                cv_stat_txt.empty()
                 st.success(f"CV batch processing done. {len(cv_data_batch)} attempted.")
+
     if st.session_state.get('uploaded_cvs_data'):
         st.subheader("Stored CVs:")
         for i, cv_d in enumerate(st.session_state['uploaded_cvs_data']):
             with st.expander(f"CV {i+1}: {cv_d.get('filename', 'N/A')}"):
                 st.text_area(f"Original:", cv_d.get('original_text',''), height=70, disabled=True, key=f"d_cv_o_{i}")
                 st.text_area(f"Processed:", cv_d.get('processed_text',''), height=70, disabled=True, key=f"d_cv_p_{i}")
-                st.success("Embedding OK.") if cv_d.get('embedding') is not None else st.warning("Embedding missing.")
-    else: st.info("No CVs processed yet.")
+                if cv_d.get('embedding') is not None and cv_d.get('embedding').size > 0:
+                    st.success("Embedding OK.") 
+                else:
+                    st.warning("Embedding missing or empty.")
+    else: 
+        st.info("No CVs processed yet.")
     return
 
 def job_recommendation_page():
@@ -538,43 +562,60 @@ def job_recommendation_page():
     main_data = st.session_state.get('data')
     if main_data is None or 'processed_text' not in main_data.columns: st.error("Job data not ready."); return
     
-    job_emb, emb_msg = None, ""
+    job_emb, emb_msg, job_emb_ids = None, "", None # Initialize job_emb_ids
     rec_choice = st.radio("Job Embeddings for Recs:", ("Standard BERT", "TSDAE"), key="rec_emb_c", horizontal=True)
+
     if rec_choice == "TSDAE":
         if st.session_state.get('tsdae_embeddings', np.array([])).size > 0:
             job_emb = st.session_state['tsdae_embeddings']
-            job_emb_ids = st.session_state.get('tsdae_embedding_job_ids')
+            job_emb_ids = st.session_state.get('tsdae_embedding_job_ids') # Get corresponding IDs
             if not job_emb_ids or len(job_emb_ids) != job_emb.shape[0]: st.error("TSDAE emb/ID mismatch."); return
             emb_msg = "Using TSDAE embeddings."
         else: st.warning("TSDAE embeddings unavailable."); return
     else: # Standard BERT
         if st.session_state.get('job_text_embeddings', np.array([])).size > 0:
             job_emb = st.session_state['job_text_embeddings']
-            job_emb_ids = st.session_state.get('job_text_embedding_job_ids')
+            job_emb_ids = st.session_state.get('job_text_embedding_job_ids') # Get corresponding IDs
             if not job_emb_ids or len(job_emb_ids) != job_emb.shape[0]: st.error("Std BERT emb/ID mismatch."); return
             emb_msg = "Using Standard BERT job embeddings."
         else: st.warning("Std BERT job embeddings unavailable."); return
     st.info(emb_msg)
 
+    # Filter main_data to only include jobs for which we have the selected embeddings and their IDs
+    if not job_emb_ids: # Should be caught above, but defensive
+        st.error("Job IDs for selected embeddings are missing."); return
+        
     jobs_for_sim_df = main_data[main_data['Job.ID'].isin(job_emb_ids)].copy()
+    # Ensure jobs_for_sim_df is ordered according to job_emb_ids to align with job_emb for cosine similarity
     jobs_for_sim_df['Job.ID'] = pd.Categorical(jobs_for_sim_df['Job.ID'], categories=job_emb_ids, ordered=True)
     jobs_for_sim_df = jobs_for_sim_df.sort_values('Job.ID').reset_index(drop=True)
-    if len(jobs_for_sim_df) != len(job_emb): st.error(f"Job emb/data alignment error for recs."); return
+
+    if len(jobs_for_sim_df) != len(job_emb): 
+        st.error(f"Job emb/data alignment error for recs. Filtered jobs: {len(jobs_for_sim_df)}, Embeddings: {len(job_emb)}"); 
+        return
 
     if st.button("Generate Recommendations", key="gen_recs_b"):
         st.session_state['all_recommendations_for_annotation'] = {} 
         with st.spinner("Generating recommendations..."):
-            valid_cvs_rec = [cv for cv in st.session_state.get('uploaded_cvs_data', []) if cv.get('embedding') is not None]
-            if not valid_cvs_rec: st.warning("No CVs with embeddings found."); return
+            valid_cvs_rec = [cv for cv in st.session_state.get('uploaded_cvs_data', []) if cv.get('embedding') is not None and cv.get('embedding').size > 0]
+            if not valid_cvs_rec: st.warning("No CVs with valid embeddings found."); return
+
             for cv_data_rec in valid_cvs_rec:
                 cv_file_n = cv_data_rec.get('filename', 'Unknown CV')
                 cv_embed = cv_data_rec['embedding']
                 st.subheader(f"Recommendations for {cv_file_n}")
                 cv_embed_2d = cv_embed.reshape(1, -1) if cv_embed.ndim == 1 else cv_embed
-                if job_emb.ndim == 1 or job_emb.shape[0] == 0: st.error(f"Job embeddings invalid for {cv_file_n}."); continue 
+                
+                if job_emb.ndim == 1 or job_emb.shape[0] == 0: 
+                    st.error(f"Job embeddings invalid for {cv_file_n}.")
+                    continue 
+                
                 similarities_rec = cosine_similarity(cv_embed_2d, job_emb)[0]
-                temp_df_rec = jobs_for_sim_df.copy()
+                
+                # temp_df_rec should be jobs_for_sim_df which is already filtered and ordered
+                temp_df_rec = jobs_for_sim_df.copy() 
                 temp_df_rec['similarity_score'] = similarities_rec
+                
                 recommended_j_df = temp_df_rec.sort_values(by='similarity_score', ascending=False).head(20)
                 if not recommended_j_df.empty:
                     display_c = ['Job.ID', 'Title', 'similarity_score']
@@ -663,14 +704,14 @@ def evaluation_page():
         with st.spinner("Preparing data & running IR evaluation..."):
             queries_dict = {str(cv['filename']): cv['processed_text'] for cv in valid_cvs_list}
             corpus_dict = dict(zip(data_eval['Job.ID'].astype(str), data_eval['processed_text']))
-            anns_df['job_id'] = anns_df['job_id'].astype(str) # Ensure string for matching
+            anns_df['job_id'] = anns_df['job_id'].astype(str) 
             relevant_docs_dict = {}
             rel_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
             if not rel_cols: st.error("No annotator relevance columns in annotations."); return
             
             for (cv_f_name, jb_id), grp in anns_df.groupby(['cv_filename', 'job_id']):
                 scores_list = [pd.to_numeric(grp[col], errors='coerce').dropna().tolist() for col in rel_cols]
-                flat_scores = [item for sublist in scores_list for item in sublist] # Flatten list of lists
+                flat_scores = [item for sublist in scores_list for item in sublist] 
                 if flat_scores:
                     if np.mean(flat_scores) >= threshold:
                         cv_f_name_str = str(cv_f_name)
@@ -710,7 +751,7 @@ elif page == "BERT Model":
     bert_model_page()
 elif page == "Clustering Job2Vec":
     clustering_page()
-elif page == "Upload CV": # This was the line indicated by the SyntaxError
+elif page == "Upload CV": 
     upload_cv_page()
 elif page == "Job Recommendation":
     job_recommendation_page()
