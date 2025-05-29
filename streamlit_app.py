@@ -848,39 +848,37 @@ def evaluation_page():
             
             eval_results_display = {}
             try:
-                # Ensure k_values for InformationRetrievalEvaluator includes 20
-                k_values_for_eval = [1, 3, 5, 10, 20, 100] # Common k values
+                k_values_for_eval = [1, 3, 5, 10, 20, 100] 
                 ir_evaluator = InformationRetrievalEvaluator(
-                    queries_dict, 
-                    corpus_dict, 
-                    relevant_docs_binary, 
+                    queries=queries_dict, 
+                    corpus=corpus_dict, 
+                    relevant_docs=relevant_docs_binary, 
                     name="job_rec_binary_eval", 
-                    show_progress_bar=False, # Set to False as it's inside a spinner
-                    precision_recall_k_values=k_values_for_eval,
-                    map_k_values=k_values_for_eval,
-                    ndcg_k_values=k_values_for_eval,
-                    mrr_k_values=k_values_for_eval
+                    show_progress_bar=False, 
+                    # CORRECTED PARAMETER NAMES
+                    precision_recall_at_k=k_values_for_eval,
+                    map_at_k=k_values_for_eval, # Assuming MAP@k is desired, if not, use mAP_at_k for mean Average Precision
+                    ndcg_at_k=k_values_for_eval,
+                    mrr_at_k=k_values_for_eval
                 )
                 binary_results = ir_evaluator(model_eval, output_path=None)
                 
-                eval_results_display['Precision@20'] = binary_results.get(f'{ir_evaluator.name}_Precision@20', 'N/A')
-                eval_results_display['Recall@20'] = binary_results.get(f'{ir_evaluator.name}_Recall@20', 'N/A')
-                eval_results_display['NDCG@20 (Binary)'] = binary_results.get(f'{ir_evaluator.name}_NDCG@20', 'N/A')
-                eval_results_display['MRR@20'] = binary_results.get(f'{ir_evaluator.name}_MRR@20', 'N/A')
-                eval_results_display['MAP@20'] = binary_results.get(f'{ir_evaluator.name}_MAP@20', 'N/A')
-                
-                # Fallbacks if @20 is not directly available for MRR/MAP (though it should be with precision_recall_k_values)
-                if eval_results_display['MRR@20'] == 'N/A': eval_results_display['MRR@20'] = binary_results.get(f'{ir_evaluator.name}_MRR@100', binary_results.get(f'{ir_evaluator.name}_MRR@10', 'N/A'))
-                if eval_results_display['MAP@20'] == 'N/A': eval_results_display['MAP@20'] = binary_results.get(f'{ir_evaluator.name}_MAP@100', binary_results.get(f'{ir_evaluator.name}_MAP@10', 'N/A'))
+                # Construct metric names as returned by the evaluator
+                eval_name = ir_evaluator.name
+                eval_results_display['Precision@20'] = binary_results.get(f'{eval_name}_Precision@20', 'N/A')
+                eval_results_display['Recall@20'] = binary_results.get(f'{eval_name}_Recall@20', 'N/A')
+                eval_results_display['NDCG@20 (Binary)'] = binary_results.get(f'{eval_name}_NDCG@20', 'N/A')
+                eval_results_display['MRR@20'] = binary_results.get(f'{eval_name}_MRR@20', binary_results.get(f'{eval_name}_MRR@10', 'N/A')) # Fallback for MRR
+                eval_results_display['MAP@20'] = binary_results.get(f'{eval_name}_MAP@20', binary_results.get(f'{eval_name}_MAP@100', 'N/A')) # Fallback for MAP
 
             except Exception as e_ir_eval: 
                 st.error(f"Error during InformationRetrievalEvaluator run: {e_ir_eval}")
+                st.exception(e_ir_eval) # Show full traceback
             
             all_graded_ndcg_at_20 = []
             corpus_texts_list_for_graded = list(corpus_dict.values())
             corpus_ids_list_for_graded = list(corpus_dict.keys())
 
-            # Cache corpus embeddings
             if st.session_state.corpus_embeddings_for_eval_cache.get('ids') == corpus_ids_list_for_graded and \
                st.session_state.corpus_embeddings_for_eval_cache.get('embeddings') is not None:
                 corpus_embeddings_graded = st.session_state.corpus_embeddings_for_eval_cache['embeddings']
@@ -893,8 +891,6 @@ def evaluation_page():
                 query_embedding = model_eval.encode(q_text)
                 cos_scores = cosine_similarity(query_embedding.reshape(1,-1), corpus_embeddings_graded)[0]
                 
-                # Get top 20 indices based on cosine similarity
-                # Ensure we don't request more items than available in the corpus
                 k_for_ndcg = min(20, len(corpus_ids_list_for_graded))
                 top_k_indices = np.argsort(cos_scores)[::-1][:k_for_ndcg]
                 
@@ -913,7 +909,6 @@ def evaluation_page():
                 if len(true_relevance_graded) > 0:
                     model_pred_scores_for_ranked_items = cos_scores[top_k_indices]
                     if len(true_relevance_graded) == len(model_pred_scores_for_ranked_items):
-                        # ndcg_score expects y_true and y_score. y_score should be the model's output scores for these items.
                         ndcg_val = ndcg_score([true_relevance_graded], [model_pred_scores_for_ranked_items], k=k_for_ndcg)
                         all_graded_ndcg_at_20.append(ndcg_val)
             
@@ -923,27 +918,32 @@ def evaluation_page():
                 eval_results_display['NDCG@20 (Graded Avg Annotator Score)'] = 'N/A'
             
             st.subheader("Evaluation Metrics Summary")
-            cols = st.columns(3)
-            metric_idx = 0
-            for label, value in eval_results_display.items():
-                col = cols[metric_idx % 3]
+            # Display metrics using st.metric in columns
+            # Define a helper for consistent formatting and handling N/A
+            def display_metric(label, value, col):
                 try:
-                    # Attempt to format as float if not 'N/A'
-                    val_to_display = f"{float(value):.4f}" if value != 'N/A' and isinstance(value, (int, float, np.number)) else str(value)
-                except ValueError:
-                    val_to_display = str(value) # Fallback if conversion fails
+                    val_str = f"{float(value):.4f}" if isinstance(value, (int, float, np.number)) and value != 'N/A' else str(value)
+                except (ValueError, TypeError):
+                    val_str = str(value)
                 
-                # Basic color styling based on metric type (example)
+                # Example delta color logic (can be customized)
                 delta_c = "normal"
-                if "Precision" in label or "Recall" in label or "MAP" in label:
-                    delta_c = "off" # Using 'off' as a neutral color for these
-                elif "NDCG" in label:
-                    delta_c = "inverse" # Different color for NDCG
-                elif "MRR" in label:
-                    delta_c = "normal" # Default for MRR
+                if "Precision" in label or "Recall" in label: delta_c = "off"
+                elif "NDCG" in label: delta_c = "inverse"
+                
+                col.metric(label=label, value=val_str, delta_color=delta_c)
 
-                col.metric(label=label, value=val_to_display, delta_color=delta_c)
-                metric_idx += 1
+            # Create columns for layout (e.g., 3 metrics per row)
+            num_metrics = len(eval_results_display)
+            cols_per_row = 3
+            
+            metric_items = list(eval_results_display.items())
+            for i in range(0, num_metrics, cols_per_row):
+                metric_cols = st.columns(cols_per_row)
+                for j in range(cols_per_row):
+                    if i + j < num_metrics:
+                        label, value = metric_items[i+j]
+                        display_metric(label, value, metric_cols[j])
     return
 
 # --- Main App Logic (Page Navigation) ---
