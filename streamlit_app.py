@@ -19,6 +19,7 @@ from sklearn.decomposition import PCA
 import random
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics import ndcg_score # For graded NDCG
 
 # --- NLTK Resource Downloads ---
 @st.cache_resource
@@ -74,6 +75,9 @@ if 'collected_annotations' not in st.session_state:
     st.session_state['collected_annotations'] = pd.DataFrame()
 if 'annotator_details' not in st.session_state:
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
+# For caching corpus embeddings during evaluation
+if 'corpus_embeddings_for_eval_cache' not in st.session_state:
+    st.session_state['corpus_embeddings_for_eval_cache'] = {'ids': None, 'embeddings': None}
 
 
 # --- Helper Functions ---
@@ -702,12 +706,11 @@ def annotation_page():
                     job_id_str = str(job_row['Job.ID']) 
                     st.markdown(f"**Job ID:** {job_id_str} | **Title:** {job_row['Title']}")
                     
-                    # Display Job Details directly, not in a nested expander
                     st.markdown(f"**Description:** {job_row.get('text','N/A')}")
                     st.markdown(f"**Similarity Score:** {job_row['similarity_score']:.4f}")
                     if 'cluster' in job_row and pd.notna(job_row['cluster']):
                         st.markdown(f"**Original Cluster:** {job_row['cluster']}")
-                    st.markdown("---") # Separator before annotator inputs for this job
+                    st.markdown("---") 
                     
                     annotation_row_data = {
                         'cv_filename': cv_filename,
@@ -771,7 +774,7 @@ def annotation_page():
                     
                     annotation_row_data.update(annotator_inputs_for_job_row)
                     form_input_data.append(annotation_row_data)
-                    st.markdown("---") # Separator between jobs within an expander
+                    st.markdown("---") 
         
         form_submit_button = st.form_submit_button("Submit All Annotations") 
 
@@ -802,12 +805,13 @@ def annotation_page():
 
 def evaluation_page():
     st.header("Model Evaluation (IR Metrics)")
-    st.write("Evaluates recommendation based on collected annotations.")
+    st.write("Evaluates recommendation performance based on collected annotations.")
     model_eval = load_bert_model()
     if model_eval is None: st.error("BERT model load failed for evaluation."); return
     data_eval = st.session_state.get('data')
     cvs_eval = st.session_state.get('uploaded_cvs_data', [])
-    anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
+    anns_df = st.session_state.get('collected_annotations', pd.DataFrame()) 
+    
     if data_eval is None or 'processed_text' not in data_eval.columns: st.warning("Job data not ready."); return
     if not cvs_eval: st.warning("No CVs uploaded."); return
     valid_cvs_list = [cv for cv in cvs_eval if cv.get('processed_text','').strip()]
@@ -815,46 +819,131 @@ def evaluation_page():
     if anns_df.empty: st.warning("No annotations collected."); return
 
     st.subheader("Evaluation Parameters")
-    threshold = st.slider("Relevance Threshold (Avg score >= threshold is relevant)", 0.0, 3.0, 1.5, 0.1, key="eval_thresh")
+    relevance_threshold_binary = st.slider("Binary Relevance Threshold (for P, R, MAP, MRR, Binary NDCG)", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary")
+    
     if st.button("Run Evaluation", key="run_eval_btn"):
         with st.spinner("Preparing data & running IR evaluation..."):
             queries_dict = {str(cv['filename']): cv['processed_text'] for cv in valid_cvs_list}
             valid_corpus_df = data_eval[data_eval['processed_text'].fillna('').str.strip() != '']
             corpus_dict = dict(zip(valid_corpus_df['Job.ID'].astype(str), valid_corpus_df['processed_text']))
             
-            anns_df['job_id'] = anns_df['job_id'].astype(str) 
-            relevant_docs_dict = {}
-            relevance_cols_for_eval = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns] 
+            anns_df_eval = anns_df.copy() 
+            anns_df_eval['job_id'] = anns_df_eval['job_id'].astype(str)
+            
+            relevant_docs_binary = {}
+            relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df_eval.columns]
+            if not relevance_cols: 
+                st.error("No annotator relevance columns found. Cannot determine binary relevance."); return
 
-            if not relevance_cols_for_eval: 
-                st.error("No annotator relevance columns found in annotations for evaluation."); return
+            for (cv_f_name, jb_id), grp in anns_df_eval.groupby(['cv_filename', 'job_id']):
+                scores = [] 
+                for rel_col in relevance_cols: 
+                    scores.extend(pd.to_numeric(grp[rel_col], errors='coerce').dropna().tolist())
+                if scores and np.mean(scores) >= relevance_threshold_binary:
+                    cv_f_name_str = str(cv_f_name)
+                    if cv_f_name_str not in relevant_docs_binary: relevant_docs_binary[cv_f_name_str] = set()
+                    relevant_docs_binary[cv_f_name_str].add(jb_id)
             
-            for (cv_f_name, jb_id), grp in anns_df.groupby(['cv_filename', 'job_id']):
-                scores_list_for_job = [] 
-                for rel_col_name_eval in relevance_cols_for_eval: 
-                    col_scores = pd.to_numeric(grp[rel_col_name_eval], errors='coerce').dropna().tolist()
-                    scores_list_for_job.extend(col_scores)
-                
-                if scores_list_for_job: 
-                    if np.mean(scores_list_for_job) >= threshold:
-                        cv_f_name_str = str(cv_f_name)
-                        if cv_f_name_str not in relevant_docs_dict: relevant_docs_dict[cv_f_name_str] = set()
-                        relevant_docs_dict[cv_f_name_str].add(jb_id) 
+            st.write(f"Info for Binary Metrics: Queries: {len(queries_dict)}, Corpus: {len(corpus_dict)}, CVs with binary relevant items: {len(relevant_docs_binary)}")
             
-            if not relevant_docs_dict: st.warning(f"No relevant docs found with threshold {threshold}. Evaluation metrics might be zero.")
-            st.write(f"Queries for Eval: {len(queries_dict)}, Corpus Size for Eval: {len(corpus_dict)}, CVs with >0 Relevant Docs: {len(relevant_docs_dict)}")
+            eval_results_display = {}
             try:
-                evaluator_instance = InformationRetrievalEvaluator(queries_dict, corpus_dict, relevant_docs_dict, name="job_rec_eval_custom", show_progress_bar=True) 
-                results_from_eval = evaluator_instance(model_eval, output_path=None) 
-                st.subheader("Evaluation Results")
-                if results_from_eval and isinstance(results_from_eval, dict):
-                    results_display_df = pd.DataFrame.from_dict(results_from_eval, orient='index', columns=['Score']) 
-                    results_display_df.index.name = "Metric"
-                    st.dataframe(results_display_df)
-                    map_metric_keys_list = [k for k in results_from_eval.keys() if 'map' in k.lower()] 
-                    if map_metric_keys_list: st.metric(label=f"Primary Metric ({map_metric_keys_list[0]})", value=f"{results_from_eval[map_metric_keys_list[0]]:.4f}")
-                else: st.write("Raw evaluation results:", results_from_eval)
-            except Exception as e_eval_run: st.error(f"IR Evaluation Execution Error: {e_eval_run}"); st.exception(e_eval_run) 
+                # Ensure k_values for InformationRetrievalEvaluator includes 20
+                k_values_for_eval = [1, 3, 5, 10, 20, 100] # Common k values
+                ir_evaluator = InformationRetrievalEvaluator(
+                    queries_dict, 
+                    corpus_dict, 
+                    relevant_docs_binary, 
+                    name="job_rec_binary_eval", 
+                    show_progress_bar=False, # Set to False as it's inside a spinner
+                    precision_recall_k_values=k_values_for_eval,
+                    map_k_values=k_values_for_eval,
+                    ndcg_k_values=k_values_for_eval,
+                    mrr_k_values=k_values_for_eval
+                )
+                binary_results = ir_evaluator(model_eval, output_path=None)
+                
+                eval_results_display['Precision@20'] = binary_results.get(f'{ir_evaluator.name}_Precision@20', 'N/A')
+                eval_results_display['Recall@20'] = binary_results.get(f'{ir_evaluator.name}_Recall@20', 'N/A')
+                eval_results_display['NDCG@20 (Binary)'] = binary_results.get(f'{ir_evaluator.name}_NDCG@20', 'N/A')
+                eval_results_display['MRR@20'] = binary_results.get(f'{ir_evaluator.name}_MRR@20', 'N/A')
+                eval_results_display['MAP@20'] = binary_results.get(f'{ir_evaluator.name}_MAP@20', 'N/A')
+                
+                # Fallbacks if @20 is not directly available for MRR/MAP (though it should be with precision_recall_k_values)
+                if eval_results_display['MRR@20'] == 'N/A': eval_results_display['MRR@20'] = binary_results.get(f'{ir_evaluator.name}_MRR@100', binary_results.get(f'{ir_evaluator.name}_MRR@10', 'N/A'))
+                if eval_results_display['MAP@20'] == 'N/A': eval_results_display['MAP@20'] = binary_results.get(f'{ir_evaluator.name}_MAP@100', binary_results.get(f'{ir_evaluator.name}_MAP@10', 'N/A'))
+
+            except Exception as e_ir_eval: 
+                st.error(f"Error during InformationRetrievalEvaluator run: {e_ir_eval}")
+            
+            all_graded_ndcg_at_20 = []
+            corpus_texts_list_for_graded = list(corpus_dict.values())
+            corpus_ids_list_for_graded = list(corpus_dict.keys())
+
+            # Cache corpus embeddings
+            if st.session_state.corpus_embeddings_for_eval_cache.get('ids') == corpus_ids_list_for_graded and \
+               st.session_state.corpus_embeddings_for_eval_cache.get('embeddings') is not None:
+                corpus_embeddings_graded = st.session_state.corpus_embeddings_for_eval_cache['embeddings']
+            else:
+                with st.spinner("Encoding corpus for graded NDCG calculation..."):
+                    corpus_embeddings_graded = model_eval.encode(corpus_texts_list_for_graded, show_progress_bar=True)
+                st.session_state.corpus_embeddings_for_eval_cache = {'ids': corpus_ids_list_for_graded, 'embeddings': corpus_embeddings_graded}
+
+            for q_id, q_text in queries_dict.items():
+                query_embedding = model_eval.encode(q_text)
+                cos_scores = cosine_similarity(query_embedding.reshape(1,-1), corpus_embeddings_graded)[0]
+                
+                # Get top 20 indices based on cosine similarity
+                # Ensure we don't request more items than available in the corpus
+                k_for_ndcg = min(20, len(corpus_ids_list_for_graded))
+                top_k_indices = np.argsort(cos_scores)[::-1][:k_for_ndcg]
+                
+                ranked_job_ids = [corpus_ids_list_for_graded[i] for i in top_k_indices]
+                
+                true_relevance_graded = np.zeros(len(ranked_job_ids))
+                for i, job_id in enumerate(ranked_job_ids):
+                    job_anns = anns_df_eval[(anns_df_eval['cv_filename'] == q_id) & (anns_df_eval['job_id'] == job_id)]
+                    if not job_anns.empty:
+                        current_job_scores = []
+                        for rel_col in relevance_cols:
+                            current_job_scores.extend(pd.to_numeric(job_anns[rel_col], errors='coerce').dropna().tolist())
+                        if current_job_scores:
+                            true_relevance_graded[i] = np.mean(current_job_scores) 
+                
+                if len(true_relevance_graded) > 0:
+                    model_pred_scores_for_ranked_items = cos_scores[top_k_indices]
+                    if len(true_relevance_graded) == len(model_pred_scores_for_ranked_items):
+                        # ndcg_score expects y_true and y_score. y_score should be the model's output scores for these items.
+                        ndcg_val = ndcg_score([true_relevance_graded], [model_pred_scores_for_ranked_items], k=k_for_ndcg)
+                        all_graded_ndcg_at_20.append(ndcg_val)
+            
+            if all_graded_ndcg_at_20:
+                eval_results_display['NDCG@20 (Graded Avg Annotator Score)'] = np.mean(all_graded_ndcg_at_20)
+            else:
+                eval_results_display['NDCG@20 (Graded Avg Annotator Score)'] = 'N/A'
+            
+            st.subheader("Evaluation Metrics Summary")
+            cols = st.columns(3)
+            metric_idx = 0
+            for label, value in eval_results_display.items():
+                col = cols[metric_idx % 3]
+                try:
+                    # Attempt to format as float if not 'N/A'
+                    val_to_display = f"{float(value):.4f}" if value != 'N/A' and isinstance(value, (int, float, np.number)) else str(value)
+                except ValueError:
+                    val_to_display = str(value) # Fallback if conversion fails
+                
+                # Basic color styling based on metric type (example)
+                delta_c = "normal"
+                if "Precision" in label or "Recall" in label or "MAP" in label:
+                    delta_c = "off" # Using 'off' as a neutral color for these
+                elif "NDCG" in label:
+                    delta_c = "inverse" # Different color for NDCG
+                elif "MRR" in label:
+                    delta_c = "normal" # Default for MRR
+
+                col.metric(label=label, value=val_to_display, delta_color=delta_c)
+                metric_idx += 1
     return
 
 # --- Main App Logic (Page Navigation) ---
