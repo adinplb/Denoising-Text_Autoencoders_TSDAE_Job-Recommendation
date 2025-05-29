@@ -72,6 +72,9 @@ if 'all_recommendations_for_annotation' not in st.session_state:
     st.session_state['all_recommendations_for_annotation'] = {} 
 if 'collected_annotations' not in st.session_state:
     st.session_state['collected_annotations'] = pd.DataFrame()
+# NEW: For storing annotator profile details
+if 'annotator_details' not in st.session_state:
+    st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
 
 
 # --- Helper Functions ---
@@ -171,7 +174,7 @@ def denoise_text(text_to_denoise, method='a', del_ratio=0.6, word_freq_dict=None
     result_words = [] 
     if method == 'a':
         keep_or_not = np.random.rand(n) > del_ratio
-        if sum(keep_or_not) == 0: 
+        if sum(keep_or_not) == 0 and n > 0 : 
             idx_to_keep = np.random.choice(n) 
             keep_or_not[idx_to_keep] = True
         result_words = np.array(words)[keep_or_not].tolist() 
@@ -587,32 +590,26 @@ def job_recommendation_page():
         st.error("Job IDs for selected embeddings are missing. Cannot proceed."); return
         
     # Construct jobs_for_sim_df ensuring alignment with job_emb_for_rec
-    # Create a DataFrame from job_emb_ids_for_rec to maintain the order of embeddings
     temp_df_for_align = pd.DataFrame({
-        'Job.ID': job_emb_ids_for_rec, # These are the IDs for the embeddings, in order
+        'Job.ID': job_emb_ids_for_rec, 
         'emb_order': np.arange(len(job_emb_ids_for_rec)) 
     })
 
-    # Select only necessary columns from main_data and drop duplicates by Job.ID to avoid issues during merge
     cols_to_select = ['Job.ID', 'Title', 'text']
     if 'cluster' in main_data.columns:
         cols_to_select.append('cluster')
     main_data_unique_details = main_data[cols_to_select].drop_duplicates(subset=['Job.ID'], keep='first')
     
-    # Merge to get job details, keeping all entries from temp_df_for_align (and their order)
     jobs_for_sim_df = pd.merge(temp_df_for_align, 
                                main_data_unique_details,
                                on='Job.ID', 
                                how='left')
-    
-    # Sort by the original embedding order to ensure alignment
     jobs_for_sim_df = jobs_for_sim_df.sort_values('emb_order').reset_index(drop=True)
 
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
-        st.error(f"Alignment error: Number of rows in `jobs_for_sim_df` ({len(jobs_for_sim_df)}) "
-                 f"does not match number of embeddings ({len(job_emb_for_rec)}). "
-                 f"This can happen if Job.IDs associated with embeddings are not found in the main dataset. "
-                 f"Please check data consistency. Number of unique Job.IDs for embeddings: {len(set(job_emb_ids_for_rec))}")
+        st.error(f"Alignment error: `jobs_for_sim_df` rows ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)}). "
+                 f"This might be due to Job.IDs from embeddings not found in the main dataset. "
+                 f"Unique Job.IDs for embeddings: {len(set(job_emb_ids_for_rec))}")
         return
 
     if st.button("Generate Recommendations", key="gen_recs_b"):
@@ -633,7 +630,6 @@ def job_recommendation_page():
                 
                 similarities_rec = cosine_similarity(cv_embed_2d, job_emb_for_rec)[0]
                 
-                # jobs_for_sim_df is already filtered and aligned with job_emb_for_rec
                 temp_df_rec_with_sim = jobs_for_sim_df.copy() 
                 temp_df_rec_with_sim['similarity_score'] = similarities_rec
                 
@@ -642,7 +638,7 @@ def job_recommendation_page():
                     display_c = ['Job.ID', 'Title', 'similarity_score']
                     if 'cluster' in recommended_j_df.columns: display_c.append('cluster')
                     if 'text' in recommended_j_df.columns: display_c.append('text')
-                    else: st.warning("'text' column missing in recommended jobs for display.")
+                    else: st.warning("'text' column missing in recommended jobs for display.") 
                     
                     st.dataframe(recommended_j_df[display_c], use_container_width=True)
                     st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df
@@ -654,58 +650,152 @@ def job_recommendation_page():
 
 def annotation_page():
     st.header("Annotation of Job Recommendations")
-    st.write("Annotate relevance (0-3) and provide feedback.")
-    if not st.session_state.get('all_recommendations_for_annotation'): st.warning("Generate recommendations first."); return
-    if 'collected_annotations' not in st.session_state: st.session_state['collected_annotations'] = pd.DataFrame()
+    st.write("Annotate relevance and provide feedback for recommended jobs.")
+
+    if not st.session_state.get('all_recommendations_for_annotation'):
+        st.warning("Generate recommendations first on the 'Job Recommendation' page."); return
+    
+    if 'annotator_details' not in st.session_state:
+        st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
+
+    st.subheader("🧑‍💻 Annotator Profiles")
+    profile_cols = st.columns(len(ANNOTATORS) if ANNOTATORS else 1)
+    for idx, annotator_slot_name in enumerate(ANNOTATORS):
+        with profile_cols[idx % len(profile_cols)]: 
+            with st.expander(f"Details for {annotator_slot_name}", expanded=False):
+                # Retrieve current values from session state to pre-fill
+                name_val = st.session_state.annotator_details.get(annotator_slot_name, {}).get('actual_name', '')
+                bg_val = st.session_state.annotator_details.get(annotator_slot_name, {}).get('profile_background', '')
+
+                actual_name = st.text_input(
+                    f"Name ({annotator_slot_name})", 
+                    value=name_val, 
+                    key=f"actual_name_{annotator_slot_name}"
+                )
+                profile_bg = st.text_area(
+                    f"Profile Background ({annotator_slot_name})", 
+                    value=bg_val, 
+                    key=f"profile_bg_{annotator_slot_name}", 
+                    height=100 
+                )
+                # Update session_state when inputs change (Streamlit reruns on input change)
+                st.session_state.annotator_details[annotator_slot_name]['actual_name'] = actual_name
+                st.session_state.annotator_details[annotator_slot_name]['profile_background'] = profile_bg
+    st.markdown("---")
+
+    st.subheader("📝 Annotate Recommendations")
+    if 'collected_annotations' not in st.session_state: 
+        st.session_state['collected_annotations'] = pd.DataFrame()
+
+    relevance_options_map = {
+        0: "0 (Very Irrelevant)",
+        1: "1 (Slightly Relevant)",
+        2: "2 (Relevant)",
+        3: "3 (Most Relevant)"
+    }
 
     with st.form(key="ann_form"):
-        form_input = []
-        for cv_fn, recs in st.session_state['all_recommendations_for_annotation'].items():
-            st.markdown(f"### CV: **{cv_fn}**")
-            for _, row_item in recs.iterrows():
-                jobid = str(row_item['Job.ID'])
-                st.markdown(f"**Job ID:** {jobid} | **Title:** {row_item['Title']}")
-                with st.expander("Details"): st.write(f"Desc: {row_item.get('text','N/A')}\nSim: {row_item['similarity_score']:.4f}") # Use .get for text
-                item_data = {'cv_filename':cv_fn,'job_id':jobid,'job_title':row_item['Title'],'job_text':row_item.get('text','N/A'), # Use .get
-                             'similarity_score':row_item['similarity_score'],'cluster':row_item.get('cluster',pd.NA)}
-                ann_item_inputs = {}
-                ann_cols_layout = st.columns(len(ANNOTATORS))
-                for i, annotator in enumerate(ANNOTATORS):
-                    with ann_cols_layout[i]:
-                        st.markdown(f"**{annotator}**")
-                        rel_k, fb_k = f"rel_{cv_fn}_{jobid}_{annotator}", f"fb_{cv_fn}_{jobid}_{annotator}"
-                        def_r, def_f = 0, ""
+        form_input_data = [] 
+        for cv_filename, recommendations_df in st.session_state['all_recommendations_for_annotation'].items():
+            st.markdown(f"### Recommendations for CV: **{cv_filename}**")
+            for _, job_row in recommendations_df.iterrows(): 
+                job_id_str = str(job_row['Job.ID']) 
+                st.markdown(f"**Job ID:** {job_id_str} | **Title:** {job_row['Title']}")
+                with st.expander("View Job Details"):
+                    st.write(f"**Description:** {job_row.get('text','N/A')}")
+                    st.write(f"**Similarity Score:** {job_row['similarity_score']:.4f}")
+                    if 'cluster' in job_row and pd.notna(job_row['cluster']):
+                        st.write(f"**Original Cluster:** {job_row['cluster']}")
+                
+                annotation_row_data = {
+                    'cv_filename': cv_filename,
+                    'job_id': job_id_str,
+                    'job_title': job_row['Title'],
+                    'job_text': job_row.get('text','N/A'),
+                    'similarity_score': job_row['similarity_score'],
+                    'cluster': job_row.get('cluster', pd.NA)
+                }
+                
+                annotator_inputs_for_job_row = {} 
+                annotation_display_cols = st.columns(len(ANNOTATORS) if ANNOTATORS else 1) 
+
+                for annotator_idx, annotator_slot_name_key in enumerate(ANNOTATORS): 
+                    with annotation_display_cols[annotator_idx % len(annotation_display_cols)]:
+                        annotator_profile = st.session_state.annotator_details.get(annotator_slot_name_key, {})
+                        display_name = annotator_profile.get('actual_name', '') or annotator_slot_name_key
+                        st.markdown(f"**{display_name}** ({annotator_slot_name_key})")
+
+                        relevance_key_widget = f"relevance_{cv_filename}_{job_id_str}_{annotator_slot_name_key}" 
+                        feedback_key_widget = f"feedback_{cv_filename}_{job_id_str}_{annotator_slot_name_key}" 
+                        
+                        default_relevance_val = 0 
+                        default_feedback_text = "" 
+
                         if not st.session_state['collected_annotations'].empty:
-                            mask_prev = (st.session_state['collected_annotations']['cv_filename'] == cv_fn) & \
-                                       (st.session_state['collected_annotations']['job_id'] == jobid)
-                            r_col, f_col = f'annotator_{i+1}_relevance', f'annotator_{i+1}_feedback'
-                            if r_col in st.session_state['collected_annotations'].columns:
-                                prev = st.session_state['collected_annotations'][mask_prev]
-                                if not prev.empty:
-                                    val_r = prev.iloc[0].get(r_col)
-                                    if pd.notna(val_r): def_r = int(val_r)
-                                    if f_col in prev.columns: def_f = str(prev.iloc[0].get(f_col, ""))
-                        r_val = st.radio("Rel:", [0,1,2,3], index=def_r, key=rel_k, horizontal=True, format_func=lambda x:f"{x}")
-                        f_val = st.text_area("FB:", value=def_f, key=fb_k, height=50)
-                        ann_item_inputs[f'annotator_{i+1}_name'] = annotator
-                        ann_item_inputs[f'annotator_{i+1}_relevance'] = r_val
-                        ann_item_inputs[f'annotator_{i+1}_feedback'] = f_val
-                item_data.update(ann_item_inputs)
-                form_input.append(item_data)
-                st.markdown("---")
-        submitted_ann = st.form_submit_button("Submit All Annotations")
-    if submitted_ann:
-        if form_input:
-            new_df_ann = pd.DataFrame(form_input)
-            st.session_state['collected_annotations'] = pd.concat([st.session_state.get('collected_annotations', pd.DataFrame()), new_df_ann]).drop_duplicates(subset=['cv_filename', 'job_id'], keep='last').reset_index(drop=True)
-            st.success("Annotations submitted/updated.")
-        else: st.warning("No annotation data entered.")
+                            existing_annotation_df_mask = (
+                                (st.session_state['collected_annotations']['cv_filename'] == cv_filename) &
+                                (st.session_state['collected_annotations']['job_id'] == job_id_str)
+                            )
+                            temp_existing_df = st.session_state['collected_annotations'][existing_annotation_df_mask]
+                            if not temp_existing_df.empty:
+                                relevance_col_name_df = f'annotator_{annotator_idx+1}_relevance'
+                                feedback_col_name_df = f'annotator_{annotator_idx+1}_feedback'
+                                if relevance_col_name_df in temp_existing_df.columns:
+                                    val = temp_existing_df.iloc[0].get(relevance_col_name_df)
+                                    if pd.notna(val): default_relevance_val = int(val)
+                                if feedback_col_name_df in temp_existing_df.columns:
+                                    default_feedback_text = str(temp_existing_df.iloc[0].get(feedback_col_name_df, ""))
+                        
+                        relevance_value_selected = st.radio( 
+                            "Relevance:", 
+                            options=list(relevance_options_map.keys()), 
+                            index=default_relevance_val, 
+                            key=relevance_key_widget, 
+                            horizontal=True,
+                            format_func=lambda x: relevance_options_map[x]
+                        )
+                        feedback_text_input = st.text_area( 
+                            "Feedback:", 
+                            value=default_feedback_text, 
+                            key=feedback_key_widget, 
+                            height=75 # Corrected height
+                        )
+                        
+                        annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_slot'] = annotator_slot_name_key
+                        annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_actual_name'] = annotator_profile.get('actual_name', '')
+                        annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_profile_background'] = annotator_profile.get('profile_background', '')
+                        annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_relevance'] = relevance_value_selected
+                        annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_feedback'] = feedback_text_input
+                
+                annotation_row_data.update(annotator_inputs_for_job_row)
+                form_input_data.append(annotation_row_data)
+                st.markdown("---") 
+        
+        form_submit_button = st.form_submit_button("Submit All Annotations") 
+
+    if form_submit_button:
+        if form_input_data:
+            new_annotations_data_df = pd.DataFrame(form_input_data) 
+            st.session_state['collected_annotations'] = pd.concat(
+                [st.session_state.get('collected_annotations', pd.DataFrame()), new_annotations_data_df]
+            ).drop_duplicates(subset=['cv_filename', 'job_id'], keep='last').reset_index(drop=True)
+            st.success("Annotations submitted/updated successfully!")
+        else:
+            st.warning("No annotation data was entered in the form.")
+
     if not st.session_state.get('collected_annotations', pd.DataFrame()).empty:
         st.subheader("Collected Annotations Preview")
         st.dataframe(st.session_state['collected_annotations'], height=300)
-        csv_data_out = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8')
-        st.download_button("Download Annotations (CSV)", csv_data_out, "job_annotations.csv", "text/csv", key="dl_ann_csv_btn")
-    else: st.info("No annotations collected yet.")
+        csv_export_data = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8') 
+        st.download_button(
+            label="Download All Annotations as CSV",
+            data=csv_export_data,
+            file_name="job_recommendation_annotations.csv",
+            mime="text/csv",
+            key="download_annotations_button_csv" 
+        )
+    else:
+        st.info("No annotations collected yet.")
     return
 
 def evaluation_page():
@@ -727,35 +817,42 @@ def evaluation_page():
     if st.button("Run Evaluation", key="run_eval_btn"):
         with st.spinner("Preparing data & running IR evaluation..."):
             queries_dict = {str(cv['filename']): cv['processed_text'] for cv in valid_cvs_list}
-            corpus_dict = dict(zip(data_eval['Job.ID'].astype(str), data_eval['processed_text']))
+            valid_corpus_df = data_eval[data_eval['processed_text'].fillna('').str.strip() != '']
+            corpus_dict = dict(zip(valid_corpus_df['Job.ID'].astype(str), valid_corpus_df['processed_text']))
+            
             anns_df['job_id'] = anns_df['job_id'].astype(str) 
             relevant_docs_dict = {}
-            rel_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
-            if not rel_cols: st.error("No annotator relevance columns in annotations."); return
+            relevance_cols_for_eval = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns] 
+
+            if not relevance_cols_for_eval: 
+                st.error("No annotator relevance columns found in annotations for evaluation."); return
             
             for (cv_f_name, jb_id), grp in anns_df.groupby(['cv_filename', 'job_id']):
-                scores_list = [pd.to_numeric(grp[col], errors='coerce').dropna().tolist() for col in rel_cols]
-                flat_scores = [item for sublist in scores_list for item in sublist] 
-                if flat_scores:
-                    if np.mean(flat_scores) >= threshold:
+                scores_list_for_job = [] 
+                for rel_col_name_eval in relevance_cols_for_eval: 
+                    col_scores = pd.to_numeric(grp[rel_col_name_eval], errors='coerce').dropna().tolist()
+                    scores_list_for_job.extend(col_scores)
+                
+                if scores_list_for_job: 
+                    if np.mean(scores_list_for_job) >= threshold:
                         cv_f_name_str = str(cv_f_name)
                         if cv_f_name_str not in relevant_docs_dict: relevant_docs_dict[cv_f_name_str] = set()
-                        relevant_docs_dict[cv_f_name_str].add(jb_id)
+                        relevant_docs_dict[cv_f_name_str].add(jb_id) 
             
-            if not relevant_docs_dict: st.warning(f"No relevant docs found with threshold {threshold}.")
-            st.write(f"Queries: {len(queries_dict)}, Corpus: {len(corpus_dict)}, CVs with relevant items: {len(relevant_docs_dict)}")
+            if not relevant_docs_dict: st.warning(f"No relevant docs found with threshold {threshold}. Evaluation metrics might be zero.")
+            st.write(f"Queries for Eval: {len(queries_dict)}, Corpus Size for Eval: {len(corpus_dict)}, CVs with >0 Relevant Docs: {len(relevant_docs_dict)}")
             try:
-                evaluator = InformationRetrievalEvaluator(queries_dict, corpus_dict, relevant_docs_dict, name="job_rec_custom_eval", show_progress_bar=True)
-                results_dict = evaluator(model_eval, output_path=None)
+                evaluator_instance = InformationRetrievalEvaluator(queries_dict, corpus_dict, relevant_docs_dict, name="job_rec_eval_custom", show_progress_bar=True) 
+                results_from_eval = evaluator_instance(model_eval, output_path=None) 
                 st.subheader("Evaluation Results")
-                if results_dict and isinstance(results_dict, dict):
-                    results_df_display = pd.DataFrame.from_dict(results_dict, orient='index', columns=['Score'])
-                    results_df_display.index.name = "Metric"
-                    st.dataframe(results_df_display)
-                    map_keys_found = [k for k in results_dict.keys() if 'map' in k.lower()]
-                    if map_keys_found: st.metric(label=f"Primary Metric ({map_keys_found[0]})", value=f"{results_dict[map_keys_found[0]]:.4f}")
-                else: st.write("Raw results:", results_dict)
-            except Exception as e: st.error(f"IR Evaluation Error: {e}"); st.exception(e)
+                if results_from_eval and isinstance(results_from_eval, dict):
+                    results_display_df = pd.DataFrame.from_dict(results_from_eval, orient='index', columns=['Score']) 
+                    results_display_df.index.name = "Metric"
+                    st.dataframe(results_display_df)
+                    map_metric_keys_list = [k for k in results_from_eval.keys() if 'map' in k.lower()] 
+                    if map_metric_keys_list: st.metric(label=f"Primary Metric ({map_metric_keys_list[0]})", value=f"{results_from_eval[map_metric_keys_list[0]]:.4f}")
+                else: st.write("Raw evaluation results:", results_from_eval)
+            except Exception as e_eval_run: st.error(f"IR Evaluation Execution Error: {e_eval_run}"); st.exception(e_eval_run) 
     return
 
 # --- Main App Logic (Page Navigation) ---
