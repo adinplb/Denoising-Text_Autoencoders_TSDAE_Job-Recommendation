@@ -653,7 +653,7 @@ def annotation_page():
     if not st.session_state.get('all_recommendations_for_annotation'):
         st.warning("Generate recommendations first on the 'Job Recommendation' page."); return
     
-    if 'annotator_details' not in st.session_state: # Should be initialized globally
+    if 'annotator_details' not in st.session_state: 
         st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
 
     st.subheader("🧑‍💻 Annotator Profiles")
@@ -692,22 +692,22 @@ def annotation_page():
 
     with st.form(key="ann_form"):
         form_input_data = [] 
-        # Determine if only one CV is present for default expansion
         expand_cv_annotator = len(st.session_state['all_recommendations_for_annotation']) == 1
 
         for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
-            # FIX for DuplicateKey error: Ensure unique Job.IDs per CV's recommendation list before rendering widgets
             recommendations_df = recommendations_df_original.drop_duplicates(subset=['Job.ID'], keep='first')
             
             with st.expander(f"Annotate Recommendations for CV: **{cv_filename}**", expanded=expand_cv_annotator):
                 for _, job_row in recommendations_df.iterrows(): 
                     job_id_str = str(job_row['Job.ID']) 
                     st.markdown(f"**Job ID:** {job_id_str} | **Title:** {job_row['Title']}")
-                    with st.expander("View Job Details"):
-                        st.write(f"**Description:** {job_row.get('text','N/A')}")
-                        st.write(f"**Similarity Score:** {job_row['similarity_score']:.4f}")
-                        if 'cluster' in job_row and pd.notna(job_row['cluster']):
-                            st.write(f"**Original Cluster:** {job_row['cluster']}")
+                    
+                    # Display Job Details directly, not in a nested expander
+                    st.markdown(f"**Description:** {job_row.get('text','N/A')}")
+                    st.markdown(f"**Similarity Score:** {job_row['similarity_score']:.4f}")
+                    if 'cluster' in job_row and pd.notna(job_row['cluster']):
+                        st.markdown(f"**Original Cluster:** {job_row['cluster']}")
+                    st.markdown("---") # Separator before annotator inputs for this job
                     
                     annotation_row_data = {
                         'cv_filename': cv_filename,
@@ -760,7 +760,7 @@ def annotation_page():
                                 "Feedback:", 
                                 value=default_feedback_text, 
                                 key=feedback_key_widget, 
-                                height=75 # Corrected height
+                                height=75 
                             )
                             
                             annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_slot'] = annotator_slot_name_key
@@ -771,7 +771,7 @@ def annotation_page():
                     
                     annotation_row_data.update(annotator_inputs_for_job_row)
                     form_input_data.append(annotation_row_data)
-                    st.markdown("---") 
+                    st.markdown("---") # Separator between jobs within an expander
         
         form_submit_button = st.form_submit_button("Submit All Annotations") 
 
