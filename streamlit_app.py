@@ -13,8 +13,7 @@ from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm # Used for local progress bar simulation, not directly visible in Streamlit's st.progress
 from sentence_transformers import SentenceTransformer
-# RerankingEvaluator is removed as per discussion to focus on manual top-k evaluation
-# from sentence_transformers.evaluation import RerankingEvaluator 
+from sentence_transformers.evaluation import RerankingEvaluator 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import random
@@ -76,6 +75,9 @@ if 'collected_annotations' not in st.session_state:
     st.session_state['collected_annotations'] = pd.DataFrame()
 if 'annotator_details' not in st.session_state:
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
+# For caching selected annotator profile for editing
+if 'selected_annotator_for_profile_edit' not in st.session_state:
+    st.session_state['selected_annotator_for_profile_edit'] = ANNOTATORS[0] if ANNOTATORS else None
 
 
 # --- Helper Functions ---
@@ -659,27 +661,40 @@ def annotation_page():
         st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
 
     st.subheader("🧑‍💻 Annotator Profiles")
-    profile_cols = st.columns(len(ANNOTATORS) if ANNOTATORS else 1)
-    for idx, annotator_slot_name in enumerate(ANNOTATORS):
-        with profile_cols[idx % len(profile_cols)]: 
-            with st.expander(f"Details for {annotator_slot_name}", expanded=False):
-                name_val = st.session_state.annotator_details.get(annotator_slot_name, {}).get('actual_name', '')
-                bg_val = st.session_state.annotator_details.get(annotator_slot_name, {}).get('profile_background', '')
+    # Dropdown for selecting annotator profile to edit
+    if ANNOTATORS:
+        selected_slot_for_edit = st.selectbox(
+            "Select Annotator Slot to Edit Profile:",
+            options=ANNOTATORS,
+            index=ANNOTATORS.index(st.session_state.get('selected_annotator_for_profile_edit', ANNOTATORS[0])), # Default to first or last selected
+            key="annotator_profile_select_dropdown"
+        )
+        st.session_state.selected_annotator_for_profile_edit = selected_slot_for_edit # Store selection
+
+        # Display inputs for the selected annotator
+        if selected_slot_for_edit:
+            with st.expander(f"Edit Profile for {selected_slot_for_edit}", expanded=True):
+                name_val = st.session_state.annotator_details.get(selected_slot_for_edit, {}).get('actual_name', '')
+                bg_val = st.session_state.annotator_details.get(selected_slot_for_edit, {}).get('profile_background', '')
 
                 actual_name = st.text_input(
-                    f"Name ({annotator_slot_name})", 
+                    f"Actual Name", 
                     value=name_val, 
-                    key=f"actual_name_{annotator_slot_name}"
+                    key=f"actual_name_input_{selected_slot_for_edit}"
                 )
                 profile_bg = st.text_area(
-                    f"Profile Background ({annotator_slot_name})", 
+                    f"Profile Background", 
                     value=bg_val, 
-                    key=f"profile_bg_{annotator_slot_name}", 
+                    key=f"profile_bg_input_{selected_slot_for_edit}", 
                     height=100 
                 )
-                st.session_state.annotator_details[annotator_slot_name]['actual_name'] = actual_name
-                st.session_state.annotator_details[annotator_slot_name]['profile_background'] = profile_bg
+                # Update session state for the selected annotator
+                st.session_state.annotator_details[selected_slot_for_edit]['actual_name'] = actual_name
+                st.session_state.annotator_details[selected_slot_for_edit]['profile_background'] = profile_bg
+    else:
+        st.warning("No annotator slots defined in ANNOTATORS constant.")
     st.markdown("---")
+
 
     st.subheader("📝 Annotate Recommendations")
     if 'collected_annotations' not in st.session_state: 
@@ -824,26 +839,17 @@ def evaluation_page():
     st.header("Model Evaluation")
     st.write(
         "This page evaluates the top 20 job recommendations using metrics similar to "
-        "CareerBERT's human-grounded evaluation, and includes Reranking specific metrics."
+        "CareerBERT's human-grounded evaluation."
     )
-    model_eval = load_bert_model()
-    if model_eval is None: 
-        st.error("BERT model could not be loaded. Evaluation cannot proceed."); return
+    # model_eval = load_bert_model() # Not strictly needed if we only evaluate stored recommendations
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
     anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
-    uploaded_cvs_for_eval = st.session_state.get('uploaded_cvs_data', [])
     
     if not all_recommendations:
         st.warning("No recommendations available (from 'Job Recommendation' page). Cannot evaluate."); return
     if anns_df.empty: 
         st.warning("No annotations collected yet. Please annotate on the 'Annotation' page."); return
-    if not uploaded_cvs_for_eval:
-        st.warning("No CVs uploaded. Please upload CVs on the 'Upload CV' page."); return
-    
-    valid_cvs_list_for_query = [cv for cv in uploaded_cvs_for_eval if cv.get('processed_text','').strip() and cv.get('filename') in all_recommendations]
-    if not valid_cvs_list_for_query:
-        st.warning("No processed CVs found that also have recommendations to evaluate."); return
 
     st.subheader("Evaluation Parameters")
     st.markdown("---")
@@ -854,95 +860,79 @@ def evaluation_page():
     )
     relevance_threshold_binary = st.slider("Binary Relevance Threshold", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary_hg")
     
-    st.markdown("---")
-    st.markdown("#### For Reranking Evaluator (using a subset of annotated recommendations)")
-    st.info(
-        "Define thresholds to select 'positive' (highly relevant) and 'negative' (less relevant) "
-        "job texts from the annotated top 20 recommendations for each CV. "
-        "The Reranking Evaluator will then assess the model's ability to rank these positives above negatives."
-    )
-    positive_threshold_rerank = st.slider("Reranker 'Positive' Threshold (Avg. Score >=)", 0.0, 3.0, 2.5, 0.1, key="rerank_positive_thresh_eval")
-    negative_threshold_rerank = st.slider("Reranker 'Negative' Threshold (Avg. Score <=)", 0.0, 3.0, 1.0, 0.1, key="rerank_negative_thresh_eval")
-
-    if st.button("Run All Evaluations", key="run_eval_all_btn"):
-        with st.spinner("Calculating evaluation metrics..."):
+    if st.button("Run Evaluation on Top 20 Recommendations", key="run_manual_eval_btn"):
+        with st.spinner("Calculating human-grounded evaluation metrics..."):
             
             all_precisions_at_20, all_average_precisions_at_20, all_reciprocal_ranks_at_20 = [], [], []
             all_binary_ndcg_at_20, all_graded_ndcg_at_20 = [], []
-            reranker_samples_list = []
 
             relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
             if not relevance_cols: 
                 st.error("No annotator relevance columns found in annotations. Cannot proceed."); return
 
             num_cvs_with_anns = 0
-            cv_texts_dict = {cv_data['filename']: cv_data.get('processed_text', '') for cv_data in uploaded_cvs_for_eval if cv_data.get('processed_text')}
-
-            for cv_data in valid_cvs_list_for_query:
-                cv_filename = cv_data['filename']
-                if cv_filename not in all_recommendations: continue 
-
-                recommended_jobs_df = all_recommendations[cv_filename]
+            
+            for cv_filename, recommended_jobs_df in all_recommendations.items():
                 if recommended_jobs_df.empty: continue
                 
                 num_cvs_with_anns +=1
                 recommended_jobs_df['Job.ID'] = recommended_jobs_df['Job.ID'].astype(str)
                 
                 cv_anns_subset = anns_df[anns_df['cv_filename'] == cv_filename].copy()
+                if cv_anns_subset.empty: # No annotations for this CV's recommendations
+                    continue
                 cv_anns_subset['job_id'] = cv_anns_subset['job_id'].astype(str)
                 
                 ranked_job_ids_list = recommended_jobs_df['Job.ID'].tolist()
-                model_similarity_scores = recommended_jobs_df['similarity_score'].tolist()
+                model_similarity_scores = recommended_jobs_df['similarity_score'].tolist() # Model's original scores
 
                 binary_relevance_scores = []
                 graded_relevance_scores = []
-                positive_texts_for_rerank = []
-                negative_texts_for_rerank = []
-
-                for job_id, job_text_original in zip(ranked_job_ids_list, recommended_jobs_df['text']):
+                
+                for job_id in ranked_job_ids_list:
                     job_specific_annotations = cv_anns_subset[cv_anns_subset['job_id'] == job_id]
-                    avg_annotator_score = 0.0
+                    avg_annotator_score = 0.0 # Default to 0 if no annotations for this specific job
                     if not job_specific_annotations.empty:
-                        annotator_scores = []
+                        annotator_scores_for_job = []
                         for rel_col_name in relevance_cols:
-                            annotator_scores.extend(pd.to_numeric(job_specific_annotations[rel_col_name], errors='coerce').dropna().tolist())
-                        if annotator_scores:
-                            avg_annotator_score = np.mean(annotator_scores)
+                            # Ensure the column exists in job_specific_annotations before trying to access
+                            if rel_col_name in job_specific_annotations.columns:
+                                annotator_scores_for_job.extend(pd.to_numeric(job_specific_annotations[rel_col_name], errors='coerce').dropna().tolist())
+                        if annotator_scores_for_job:
+                            avg_annotator_score = np.mean(annotator_scores_for_job)
                     
                     graded_relevance_scores.append(avg_annotator_score)
                     binary_relevance_scores.append(1 if avg_annotator_score >= relevance_threshold_binary else 0)
-
-                    if avg_annotator_score >= positive_threshold_rerank:
-                        positive_texts_for_rerank.append(job_text_original) 
-                    elif avg_annotator_score <= negative_threshold_rerank:
-                        negative_texts_for_rerank.append(job_text_original)
                 
-                current_cv_query_text = cv_texts_dict.get(cv_filename)
-                if current_cv_query_text and positive_texts_for_rerank: 
-                    reranker_samples_list.append({
-                        "query": current_cv_query_text,
-                        "positive": positive_texts_for_rerank,
-                        "negative": negative_texts_for_rerank 
-                    })
-
-                k_cutoff = 20
-                if binary_relevance_scores: # Ensure list is not empty
+                k_cutoff = 20 # Evaluating top 20 recommendations
+                
+                # Precision@20
+                if binary_relevance_scores: 
                     all_precisions_at_20.append(sum(binary_relevance_scores) / len(binary_relevance_scores))
+                
+                # MAP@20
                 all_average_precisions_at_20.append(_calculate_average_precision(binary_relevance_scores, k_cutoff))
                 
+                # MRR@20
                 current_rr = 0.0
-                for r, is_rel in enumerate(binary_relevance_scores):
-                    if is_rel: current_rr = 1.0 / (r + 1); break
+                for r, is_rel in enumerate(binary_relevance_scores): # Iterate up to k_cutoff (implicitly handled by list length)
+                    if is_rel: 
+                        current_rr = 1.0 / (r + 1)
+                        break
                 all_reciprocal_ranks_at_20.append(current_rr)
 
+                # NDCG@20 (Binary and Graded)
+                # Ensure lists are of the same length and not empty
                 if len(binary_relevance_scores) == len(model_similarity_scores) and len(binary_relevance_scores) > 0:
                     all_binary_ndcg_at_20.append(ndcg_score([binary_relevance_scores], [model_similarity_scores], k=k_cutoff))
+                
                 if len(graded_relevance_scores) == len(model_similarity_scores) and len(graded_relevance_scores) > 0:
                     all_graded_ndcg_at_20.append(ndcg_score([graded_relevance_scores], [model_similarity_scores], k=k_cutoff))
 
+            # Aggregate and Display Human-Grounded Metrics
             eval_results_human_grounded = {
                 'Precision@20': np.mean(all_precisions_at_20) if all_precisions_at_20 else 'N/A',
-                'Recall@20': 'N/A (Requires total relevant in corpus)',
+                'Recall@20': 'N/A (Requires total relevant in corpus)', # Kept as N/A
                 'MAP@20': np.mean(all_average_precisions_at_20) if all_average_precisions_at_20 else 'N/A',
                 'MRR@20': np.mean(all_reciprocal_ranks_at_20) if all_reciprocal_ranks_at_20 else 'N/A',
                 'NDCG@20 (Binary)': np.mean(all_binary_ndcg_at_20) if all_binary_ndcg_at_20 else 'N/A',
@@ -950,7 +940,12 @@ def evaluation_page():
             }
 
             st.subheader("Human-Grounded Metrics (on Top 20 Initial Recommendations)")
-            st.write(f"Calculated based on {num_cvs_with_anns} CVs with recommendations and annotations.")
+            if num_cvs_with_anns > 0:
+                st.write(f"Calculated based on {num_cvs_with_anns} CVs with recommendations and annotations.")
+            else:
+                st.warning("No CVs with annotations were found to calculate metrics.")
+                return # Stop if no data to show
+
             metric_layout_config_hg = {
                 'Precision@20': {'format_percent': True, 'help': "Average P@20. Proportion of top 20 recommended items that are relevant (binary)."},
                 'Recall@20': {'format_percent': True, 'help': "Recall@20 is complex without knowing total relevant items per CV in the entire corpus."},
@@ -974,59 +969,12 @@ def evaluation_page():
                     if isinstance(value, (int, float, np.number)) and not (isinstance(value, float) and np.isnan(value)):
                         val_str = f"{value*100:.2f}%" if config['format_percent'] else f"{float(value):.4f}"
                     elif isinstance(value, str): val_str = value 
-                    d_color = "normal"
+                    
+                    d_color = "normal" # Default
                     if "NDCG" in label: d_color = "inverse"
-                    elif "Precision" in label or "MAP" in label: d_color = "off"
+                    elif "Precision" in label or "MAP" in label: d_color = "off" 
+                    
                     col_to_use.metric(label=label, value=val_str, delta_color=d_color, help=config['help'])
-            
-            st.markdown("---")
-            st.subheader("Reranking Evaluation Metrics (Model's ability to rank positives over negatives)")
-            if reranker_samples_list:
-                try:
-                    # Note: RerankingEvaluator's default primary metric is often MAP.
-                    # It also calculates MRR@k and Accuracy@k based on its 'at_k' parameter.
-                    # It does not directly output Precision@k or Recall@k in the same way as InformationRetrievalEvaluator.
-                    rerank_evaluator = RerankingEvaluator(
-                        samples=reranker_samples_list, 
-                        name="job_reranker_eval",
-                        at_k=10, # Default for RerankingEvaluator's internal MRR/Accuracy. Can be adjusted.
-                        # mrr_at_k=20, # This specific parameter might not exist, at_k usually controls this.
-                        # ndcg_at_k=20, # RerankingEvaluator does not compute NDCG by default.
-                        show_progress_bar=True,
-                        write_csv=False
-                    )
-                    reranker_results = rerank_evaluator(model_eval, output_path=None)
-                    
-                    st.write(f"Reranking Evaluation based on {len(reranker_samples_list)} CVs with distinct positive/negative sets:")
-
-                    # Metrics from RerankingEvaluator are typically prefixed with its name.
-                    # The most common are MAP and MRR@k (where k is its `at_k` parameter).
-                    rerank_map_val = reranker_results.get(f'{rerank_evaluator.name}_map', reranker_results.get('map', 'N/A'))
-                    # MRR@k from RerankingEvaluator depends on its `at_k` setting.
-                    # If we want MRR@20 specifically, we'd need to ensure `at_k=20` or calculate manually.
-                    # For simplicity, we'll report the MRR@k it provides (likely MRR@10 by default if at_k=10).
-                    mrr_k_key = [key for key in reranker_results.keys() if 'mrr@' in key.lower()]
-                    rerank_mrr_val = reranker_results.get(mrr_k_key[0] if mrr_k_key else f'{rerank_evaluator.name}_mrr', 'N/A')
-
-
-                    cols_rerank_display = st.columns(2) # Displaying MAP and MRR from reranker
-                    
-                    val_str_map = f"{rerank_map_val*100:.2f}%" if isinstance(rerank_map_val, float) else str(rerank_map_val)
-                    cols_rerank_display[0].metric(label="Reranker MAP", value=val_str_map, help="Mean Average Precision for reranking positive over negative samples within the top 20 set.", delta_color="off")
-                    
-                    val_str_mrr = f"{rerank_mrr_val:.4f}" if isinstance(rerank_mrr_val, float) else str(rerank_mrr_val)
-                    mrr_label = mrr_k_key[0].split('_')[-1].upper() if mrr_k_key else "Reranker MRR"
-                    cols_rerank_display[1].metric(label=mrr_label, value=val_str_mrr, help=f"Mean Reciprocal Rank for the first positive sample in reranked set (at k used by evaluator).", delta_color="normal")
-
-                    if rerank_map_val == 'N/A' and rerank_mrr_val == 'N/A':
-                        st.info("RerankingEvaluator did not produce standard MAP or MRR. Raw results:")
-                        st.json(reranker_results) # Display all results from reranker
-
-                except Exception as e_rerank_run:
-                    st.error(f"Error during RerankingEvaluator execution: {e_rerank_run}")
-                    st.exception(e_rerank_run)
-            else:
-                st.info("Not enough distinct positive/negative samples derived from annotations to run Reranking Evaluation.")
     return
 
 # --- Main App Logic (Page Navigation) ---
