@@ -73,11 +73,12 @@ if 'all_recommendations_for_annotation' not in st.session_state:
     st.session_state['all_recommendations_for_annotation'] = {} 
 if 'collected_annotations' not in st.session_state:
     st.session_state['collected_annotations'] = pd.DataFrame()
-if 'annotator_details' not in st.session_state:
+if 'annotator_details' not in st.session_state: # For profiles
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
-# For caching selected annotator profile for editing
-if 'selected_annotator_for_profile_edit' not in st.session_state:
-    st.session_state['selected_annotator_for_profile_edit'] = ANNOTATORS[0] if ANNOTATORS else None
+if 'current_annotator_slot_for_input' not in st.session_state: # For dropdown selection
+    st.session_state['current_annotator_slot_for_input'] = ANNOTATORS[0] if ANNOTATORS else None
+if 'annotators_saved_status' not in st.session_state: # To track completion for final submit
+    st.session_state['annotators_saved_status'] = set()
 
 
 # --- Helper Functions ---
@@ -659,243 +660,244 @@ def annotation_page():
     
     if 'annotator_details' not in st.session_state: 
         st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
+    if 'current_annotator_slot_for_input' not in st.session_state:
+         st.session_state.current_annotator_slot_for_input = ANNOTATORS[0] if ANNOTATORS else None
+    if 'annotators_saved_status' not in st.session_state:
+        st.session_state.annotators_saved_status = set()
 
-    st.subheader("🧑‍💻 Annotator Profiles")
-    # Dropdown for selecting annotator profile to edit
+
+    st.subheader("🧑‍💻 Annotator Profile & Selection")
+    
     if ANNOTATORS:
-        selected_slot_for_edit = st.selectbox(
-            "Select Annotator Slot to Edit Profile:",
+        selected_slot = st.selectbox(
+            "Select Your Annotator Slot to Enter/Edit Details and Annotations:",
             options=ANNOTATORS,
-            index=ANNOTATORS.index(st.session_state.get('selected_annotator_for_profile_edit', ANNOTATORS[0])), # Default to first or last selected
-            key="annotator_profile_select_dropdown"
+            index=ANNOTATORS.index(st.session_state.current_annotator_slot_for_input) if st.session_state.current_annotator_slot_for_input in ANNOTATORS else 0,
+            key="annotator_slot_selector"
         )
-        st.session_state.selected_annotator_for_profile_edit = selected_slot_for_edit # Store selection
+        st.session_state.current_annotator_slot_for_input = selected_slot
 
-        # Display inputs for the selected annotator
-        if selected_slot_for_edit:
-            with st.expander(f"Edit Profile for {selected_slot_for_edit}", expanded=True):
-                name_val = st.session_state.annotator_details.get(selected_slot_for_edit, {}).get('actual_name', '')
-                bg_val = st.session_state.annotator_details.get(selected_slot_for_edit, {}).get('profile_background', '')
+        if selected_slot:
+            with st.expander(f"Edit Profile for {selected_slot}", expanded=True):
+                name_val = st.session_state.annotator_details.get(selected_slot, {}).get('actual_name', '')
+                bg_val = st.session_state.annotator_details.get(selected_slot, {}).get('profile_background', '')
 
                 actual_name = st.text_input(
-                    f"Actual Name", 
+                    f"Your Name", 
                     value=name_val, 
-                    key=f"actual_name_input_{selected_slot_for_edit}"
+                    key=f"actual_name_input_{selected_slot}" 
                 )
                 profile_bg = st.text_area(
-                    f"Profile Background", 
+                    f"Your Profile Background", 
                     value=bg_val, 
-                    key=f"profile_bg_input_{selected_slot_for_edit}", 
+                    key=f"profile_bg_input_{selected_slot}", 
                     height=100 
                 )
-                # Update session state for the selected annotator
-                st.session_state.annotator_details[selected_slot_for_edit]['actual_name'] = actual_name
-                st.session_state.annotator_details[selected_slot_for_edit]['profile_background'] = profile_bg
+                st.session_state.annotator_details[selected_slot]['actual_name'] = actual_name
+                st.session_state.annotator_details[selected_slot]['profile_background'] = profile_bg
     else:
-        st.warning("No annotator slots defined in ANNOTATORS constant.")
+        st.warning("No annotator slots defined. Please check ANNOTATORS constant.")
+        return
+    
     st.markdown("---")
-
-
-    st.subheader("📝 Annotate Recommendations")
+    current_annotator_display_name = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
+    st.subheader(f"📝 Annotate Recommendations as {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
+    
     if 'collected_annotations' not in st.session_state: 
         st.session_state['collected_annotations'] = pd.DataFrame()
 
     relevance_options_map = {
-        0: "0 (Very Irrelevant)",
-        1: "1 (Slightly Relevant)",
-        2: "2 (Relevant)",
-        3: "3 (Most Relevant)"
+        0: "0 (Very Irrelevant)", 1: "1 (Slightly Relevant)",
+        2: "2 (Relevant)",       3: "3 (Most Relevant)"
     }
+    
+    # Initialize collected_annotations DataFrame structure if it's empty
+    if st.session_state.collected_annotations.empty and st.session_state.all_recommendations_for_annotation:
+        base_records = []
+        for cv_fn, rec_df in st.session_state.all_recommendations_for_annotation.items():
+            rec_df_unique_jobs = rec_df.drop_duplicates(subset=['Job.ID'], keep='first')
+            for _, rec_row in rec_df_unique_jobs.iterrows():
+                record = {
+                    'cv_filename': cv_fn, 'job_id': str(rec_row['Job.ID']),
+                    'job_title': rec_row['Title'], 'job_text': rec_row.get('text', ''),
+                    'similarity_score': rec_row['similarity_score'], 'cluster': rec_row.get('cluster', pd.NA)
+                }
+                for i, slot_name_const in enumerate(ANNOTATORS):
+                    record[f'annotator_{i+1}_slot'] = slot_name_const
+                    record[f'annotator_{i+1}_actual_name'] = ""
+                    record[f'annotator_{i+1}_profile_background'] = ""
+                    record[f'annotator_{i+1}_relevance'] = pd.NA 
+                    record[f'annotator_{i+1}_feedback'] = ""
+                base_records.append(record)
+        if base_records:
+            st.session_state.collected_annotations = pd.DataFrame(base_records)
 
-    with st.form(key="ann_form"):
-        form_input_data = [] 
+    current_annotator_slot = st.session_state.current_annotator_slot_for_input
+    annotator_idx_for_cols = ANNOTATORS.index(current_annotator_slot) 
+
+    with st.form(key=f"annotation_form_{current_annotator_slot}"):
+        form_input_for_current_annotator = [] 
         expand_cv_annotator = len(st.session_state['all_recommendations_for_annotation']) == 1
 
         for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
             recommendations_df = recommendations_df_original.drop_duplicates(subset=['Job.ID'], keep='first')
             
-            with st.expander(f"Annotate Recommendations for CV: **{cv_filename}**", expanded=expand_cv_annotator):
+            with st.expander(f"Recommendations for CV: **{cv_filename}**", expanded=expand_cv_annotator):
                 for _, job_row in recommendations_df.iterrows(): 
                     job_id_str = str(job_row['Job.ID']) 
                     st.markdown(f"**Job ID:** {job_id_str} | **Title:** {job_row['Title']}")
+                    st.caption(f"Description: {job_row.get('text','N/A')[:200]}...") 
+                    st.markdown(f"Similarity Score: {job_row['similarity_score']:.4f} | Cluster: {job_row.get('cluster', 'N/A')}")
                     
-                    st.markdown(f"**Description:** {job_row.get('text','N/A')}")
-                    st.markdown(f"**Similarity Score:** {job_row['similarity_score']:.4f}")
-                    if 'cluster' in job_row and pd.notna(job_row['cluster']):
-                        st.markdown(f"**Original Cluster:** {job_row['cluster']}")
-                    st.markdown("---") 
+                    relevance_key = f"relevance_{cv_filename}_{job_id_str}_{current_annotator_slot}"
+                    feedback_key = f"feedback_{cv_filename}_{job_id_str}_{current_annotator_slot}"
                     
-                    annotation_row_data = {
-                        'cv_filename': cv_filename,
-                        'job_id': job_id_str,
-                        'job_title': job_row['Title'],
-                        'job_text': job_row.get('text','N/A'),
-                        'similarity_score': job_row['similarity_score'],
-                        'cluster': job_row.get('cluster', pd.NA)
-                    }
+                    default_relevance = 0
+                    default_feedback = ""
+                    if not st.session_state.collected_annotations.empty:
+                        mask = (st.session_state.collected_annotations['cv_filename'] == cv_filename) & \
+                               (st.session_state.collected_annotations['job_id'] == job_id_str)
+                        existing_row_df = st.session_state.collected_annotations[mask]
+                        if not existing_row_df.empty:
+                            relevance_col = f'annotator_{annotator_idx_for_cols+1}_relevance'
+                            feedback_col = f'annotator_{annotator_idx_for_cols+1}_feedback'
+                            if relevance_col in existing_row_df.columns:
+                                val = existing_row_df.iloc[0].get(relevance_col)
+                                if pd.notna(val): default_relevance = int(val)
+                            if feedback_col in existing_row_df.columns:
+                                default_feedback = str(existing_row_df.iloc[0].get(feedback_col, ""))
                     
-                    annotator_inputs_for_job_row = {} 
-                    annotation_display_cols = st.columns(len(ANNOTATORS) if ANNOTATORS else 1) 
-
-                    for annotator_idx, annotator_slot_name_key in enumerate(ANNOTATORS): 
-                        with annotation_display_cols[annotator_idx % len(annotation_display_cols)]:
-                            annotator_profile = st.session_state.annotator_details.get(annotator_slot_name_key, {})
-                            display_name = annotator_profile.get('actual_name', '') or annotator_slot_name_key
-                            st.markdown(f"**{display_name}** ({annotator_slot_name_key})")
-
-                            relevance_key_widget = f"relevance_{cv_filename}_{job_id_str}_{annotator_slot_name_key}" 
-                            feedback_key_widget = f"feedback_{cv_filename}_{job_id_str}_{annotator_slot_name_key}" 
-                            
-                            default_relevance_val = 0 
-                            default_feedback_text = "" 
-
-                            if not st.session_state['collected_annotations'].empty:
-                                existing_annotation_df_mask = (
-                                    (st.session_state['collected_annotations']['cv_filename'] == cv_filename) &
-                                    (st.session_state['collected_annotations']['job_id'] == job_id_str)
-                                )
-                                temp_existing_df = st.session_state['collected_annotations'][existing_annotation_df_mask]
-                                if not temp_existing_df.empty:
-                                    relevance_col_name_df = f'annotator_{annotator_idx+1}_relevance'
-                                    feedback_col_name_df = f'annotator_{annotator_idx+1}_feedback'
-                                    if relevance_col_name_df in temp_existing_df.columns:
-                                        val = temp_existing_df.iloc[0].get(relevance_col_name_df)
-                                        if pd.notna(val): default_relevance_val = int(val)
-                                    if feedback_col_name_df in temp_existing_df.columns:
-                                        default_feedback_text = str(temp_existing_df.iloc[0].get(feedback_col_name_df, ""))
-                            
-                            relevance_value_selected = st.radio( 
-                                "Relevance:", 
-                                options=list(relevance_options_map.keys()), 
-                                index=default_relevance_val if default_relevance_val in relevance_options_map else 0, 
-                                key=relevance_key_widget, 
-                                horizontal=True,
-                                format_func=lambda x: relevance_options_map[x]
-                            )
-                            feedback_text_input = st.text_area( 
-                                "Feedback:", 
-                                value=default_feedback_text, 
-                                key=feedback_key_widget, 
-                                height=75 
-                            )
-                            
-                            annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_slot'] = annotator_slot_name_key
-                            annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_actual_name'] = annotator_profile.get('actual_name', '')
-                            annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_profile_background'] = annotator_profile.get('profile_background', '')
-                            annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_relevance'] = relevance_value_selected
-                            annotator_inputs_for_job_row[f'annotator_{annotator_idx+1}_feedback'] = feedback_text_input
+                    relevance_value = st.radio("Relevance:", options=list(relevance_options_map.keys()), 
+                                               index=default_relevance if default_relevance in relevance_options_map else 0, 
+                                               key=relevance_key, horizontal=True, format_func=lambda x: relevance_options_map[x])
+                    feedback_value = st.text_area("Feedback:", value=default_feedback, key=feedback_key, height=75)
                     
-                    annotation_row_data.update(annotator_inputs_for_job_row)
-                    form_input_data.append(annotation_row_data)
-                    st.markdown("---") 
+                    form_input_for_current_annotator.append({
+                        'cv_filename': cv_filename, 'job_id': job_id_str,
+                        'relevance': relevance_value, 'feedback': feedback_value
+                    })
+                    st.markdown("---")
         
-        form_submit_button = st.form_submit_button("Submit All Annotations") 
+        submitted_by_annotator = st.form_submit_button(f"Save/Update My Ratings ({current_annotator_display_name})")
 
-    if form_submit_button:
-        if form_input_data:
-            new_annotations_data_df = pd.DataFrame(form_input_data) 
-            st.session_state['collected_annotations'] = pd.concat(
-                [st.session_state.get('collected_annotations', pd.DataFrame()), new_annotations_data_df]
-            ).drop_duplicates(subset=['cv_filename', 'job_id'], keep='last').reset_index(drop=True)
-            st.success("Annotations submitted/updated successfully!")
-        else:
-            st.warning("No annotation data was entered in the form.")
+    if submitted_by_annotator:
+        annotator_profile_details = st.session_state.annotator_details.get(current_annotator_slot, {})
+        annotator_actual_name = annotator_profile_details.get('actual_name', current_annotator_slot)
+        annotator_profile_bg = annotator_profile_details.get('profile_background', '')
+
+        updated_count = 0
+        for item in form_input_for_current_annotator:
+            mask = (st.session_state.collected_annotations['cv_filename'] == item['cv_filename']) & \
+                   (st.session_state.collected_annotations['job_id'] == item['job_id'])
+            
+            idx_to_update_list = st.session_state.collected_annotations[mask].index
+            
+            if not idx_to_update_list.empty:
+                idx_to_update = idx_to_update_list[0]
+                st.session_state.collected_annotations.loc[idx_to_update, f'annotator_{annotator_idx_for_cols+1}_slot'] = current_annotator_slot
+                st.session_state.collected_annotations.loc[idx_to_update, f'annotator_{annotator_idx_for_cols+1}_actual_name'] = annotator_actual_name
+                st.session_state.collected_annotations.loc[idx_to_update, f'annotator_{annotator_idx_for_cols+1}_profile_background'] = annotator_profile_bg
+                st.session_state.collected_annotations.loc[idx_to_update, f'annotator_{annotator_idx_for_cols+1}_relevance'] = item['relevance']
+                st.session_state.collected_annotations.loc[idx_to_update, f'annotator_{annotator_idx_for_cols+1}_feedback'] = item['feedback']
+                updated_count +=1
+            else:
+                st.warning(f"Base record for CV {item['cv_filename']}, Job {item['job_id']} not found. This item was not updated.")
+
+        st.success(f"Annotations by {current_annotator_display_name} saved/updated for {updated_count} items.")
+        st.session_state.annotators_saved_status.add(current_annotator_slot)
+
+    st.markdown("---")
+    st.subheader("Final Actions")
+    completed_annotators_count = len(st.session_state.get('annotators_saved_status', set()))
+    total_annotators_count = len(ANNOTATORS) if ANNOTATORS else 0
+
+    if total_annotators_count > 0 and completed_annotators_count == total_annotators_count:
+        st.success(f"All {total_annotators_count} annotator slots have saved their ratings!")
+        if not st.session_state.get('collected_annotations', pd.DataFrame()).empty:
+            csv_export_data = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8') 
+            st.download_button(
+                label="Download All Collected Annotations as CSV",
+                data=csv_export_data,
+                file_name="all_job_recommendation_annotations.csv",
+                mime="text/csv",
+                key="download_all_annotations_final_btn",
+                disabled=False
+            )
+    else:
+        st.info(f"Waiting for all annotator slots to save ratings. "
+                f"Currently completed: {completed_annotators_count}/{total_annotators_count}.")
+        st.write("Completed slots:", ", ".join(sorted(list(st.session_state.annotators_saved_status))) or "None")
+        st.download_button( # Keep download button visible but disabled
+                label="Download All Collected Annotations as CSV",
+                data=b'', # Empty data when disabled
+                file_name="all_job_recommendation_annotations.csv",
+                mime="text/csv",
+                key="download_all_annotations_final_btn_disabled",
+                disabled=True 
+            )
 
     if not st.session_state.get('collected_annotations', pd.DataFrame()).empty:
-        st.subheader("Collected Annotations Preview")
-        st.dataframe(st.session_state['collected_annotations'], height=300)
-        csv_export_data = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8') 
-        st.download_button(
-            label="Download All Annotations as CSV",
-            data=csv_export_data,
-            file_name="job_recommendation_annotations.csv",
-            mime="text/csv",
-            key="download_annotations_button_csv" 
-        )
-    else:
-        st.info("No annotations collected yet.")
+        with st.expander("Show Current Collected Annotations Data (All Annotators)", expanded=False):
+            st.dataframe(st.session_state['collected_annotations'], height=300)
     return
 
 def _calculate_average_precision(ranked_relevance_binary, k_val):
-    """Helper function to calculate Average Precision @ k."""
-    if not ranked_relevance_binary: 
-        return 0.0
-    
+    if not ranked_relevance_binary: return 0.0
     ranked_relevance_binary = ranked_relevance_binary[:k_val] 
-    
-    relevant_hits = 0
-    sum_precisions = 0
+    relevant_hits, sum_precisions = 0, 0.0
     for i, is_relevant in enumerate(ranked_relevance_binary):
         if is_relevant:
             relevant_hits += 1
             sum_precisions += relevant_hits / (i + 1)
-    
-    if relevant_hits == 0:
-        return 0.0
-    return sum_precisions / relevant_hits
-
+    return sum_precisions / relevant_hits if relevant_hits > 0 else 0.0
 
 def evaluation_page():
     st.header("Model Evaluation")
-    st.write(
-        "This page evaluates the top 20 job recommendations using metrics similar to "
-        "CareerBERT's human-grounded evaluation."
-    )
-    # model_eval = load_bert_model() # Not strictly needed if we only evaluate stored recommendations
+    st.write("Evaluates top 20 recommendations based on human annotations.")
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
     anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
     
-    if not all_recommendations:
-        st.warning("No recommendations available (from 'Job Recommendation' page). Cannot evaluate."); return
-    if anns_df.empty: 
-        st.warning("No annotations collected yet. Please annotate on the 'Annotation' page."); return
+    if not all_recommendations: st.warning("No recommendations to evaluate."); return
+    if anns_df.empty: st.warning("No annotations collected."); return
 
     st.subheader("Evaluation Parameters")
-    st.markdown("---")
-    st.markdown("#### For Human-Grounded Metrics (P@20, MAP@20, MRR@20, etc.)")
-    st.info(
-        "The 'Binary Relevance Threshold' converts average graded annotator scores (0-3) "
-        "into a binary 'relevant' (1) or 'not relevant' (0) decision for these metrics."
-    )
+    st.info("The 'Binary Relevance Threshold' converts average graded annotator scores (0-3) into binary 'relevant' (1) or 'not relevant' (0) for P@20, MAP@20, MRR@20, HR@20, and Binary NDCG@20.")
     relevance_threshold_binary = st.slider("Binary Relevance Threshold", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary_hg")
     
     if st.button("Run Evaluation on Top 20 Recommendations", key="run_manual_eval_btn"):
         with st.spinner("Calculating human-grounded evaluation metrics..."):
-            
-            all_precisions_at_20, all_average_precisions_at_20, all_reciprocal_ranks_at_20 = [], [], []
+            all_p_at_20, all_map_at_20, all_mrr_at_20, all_hr_at_20 = [], [], [], []
             all_binary_ndcg_at_20, all_graded_ndcg_at_20 = [], []
 
             relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
-            if not relevance_cols: 
-                st.error("No annotator relevance columns found in annotations. Cannot proceed."); return
+            if not relevance_cols: st.error("No annotator relevance columns in annotations."); return
 
-            num_cvs_with_anns = 0
-            
+            num_cvs_evaluated = 0
             for cv_filename, recommended_jobs_df in all_recommendations.items():
                 if recommended_jobs_df.empty: continue
                 
-                num_cvs_with_anns +=1
                 recommended_jobs_df['Job.ID'] = recommended_jobs_df['Job.ID'].astype(str)
-                
                 cv_anns_subset = anns_df[anns_df['cv_filename'] == cv_filename].copy()
-                if cv_anns_subset.empty: # No annotations for this CV's recommendations
-                    continue
+                if cv_anns_subset.empty: continue # Skip CV if no annotations for its recommendations
+                
+                num_cvs_evaluated +=1
                 cv_anns_subset['job_id'] = cv_anns_subset['job_id'].astype(str)
                 
-                ranked_job_ids_list = recommended_jobs_df['Job.ID'].tolist()
-                model_similarity_scores = recommended_jobs_df['similarity_score'].tolist() # Model's original scores
+                # Ensure we only consider the top 20 recommendations as per the stored list
+                top_20_recs_df = recommended_jobs_df.head(20)
+                ranked_job_ids_list = top_20_recs_df['Job.ID'].tolist()
+                model_similarity_scores = top_20_recs_df['similarity_score'].tolist()
 
                 binary_relevance_scores = []
                 graded_relevance_scores = []
                 
                 for job_id in ranked_job_ids_list:
                     job_specific_annotations = cv_anns_subset[cv_anns_subset['job_id'] == job_id]
-                    avg_annotator_score = 0.0 # Default to 0 if no annotations for this specific job
+                    avg_annotator_score = 0.0 
                     if not job_specific_annotations.empty:
                         annotator_scores_for_job = []
                         for rel_col_name in relevance_cols:
-                            # Ensure the column exists in job_specific_annotations before trying to access
                             if rel_col_name in job_specific_annotations.columns:
                                 annotator_scores_for_job.extend(pd.to_numeric(job_specific_annotations[rel_col_name], errors='coerce').dropna().tolist())
                         if annotator_scores_for_job:
@@ -904,77 +906,74 @@ def evaluation_page():
                     graded_relevance_scores.append(avg_annotator_score)
                     binary_relevance_scores.append(1 if avg_annotator_score >= relevance_threshold_binary else 0)
                 
-                k_cutoff = 20 # Evaluating top 20 recommendations
+                k_cutoff = 20 
                 
-                # Precision@20
-                if binary_relevance_scores: 
-                    all_precisions_at_20.append(sum(binary_relevance_scores) / len(binary_relevance_scores))
-                
-                # MAP@20
-                all_average_precisions_at_20.append(_calculate_average_precision(binary_relevance_scores, k_cutoff))
-                
-                # MRR@20
-                current_rr = 0.0
-                for r, is_rel in enumerate(binary_relevance_scores): # Iterate up to k_cutoff (implicitly handled by list length)
-                    if is_rel: 
-                        current_rr = 1.0 / (r + 1)
-                        break
-                all_reciprocal_ranks_at_20.append(current_rr)
+                if binary_relevance_scores: # Ensure list is not empty
+                    all_p_at_20.append(sum(binary_relevance_scores) / len(binary_relevance_scores))
+                    if any(binary_relevance_scores): # Check if there's at least one relevant item for HR
+                        all_hr_at_20.append(1)
+                    else:
+                        all_hr_at_20.append(0)
 
-                # NDCG@20 (Binary and Graded)
-                # Ensure lists are of the same length and not empty
+                all_map_at_20.append(_calculate_average_precision(binary_relevance_scores, k_cutoff))
+                
+                current_rr = 0.0
+                for r, is_rel in enumerate(binary_relevance_scores): 
+                    if is_rel: current_rr = 1.0 / (r + 1); break
+                all_mrr_at_20.append(current_rr)
+
                 if len(binary_relevance_scores) == len(model_similarity_scores) and len(binary_relevance_scores) > 0:
                     all_binary_ndcg_at_20.append(ndcg_score([binary_relevance_scores], [model_similarity_scores], k=k_cutoff))
-                
                 if len(graded_relevance_scores) == len(model_similarity_scores) and len(graded_relevance_scores) > 0:
                     all_graded_ndcg_at_20.append(ndcg_score([graded_relevance_scores], [model_similarity_scores], k=k_cutoff))
 
-            # Aggregate and Display Human-Grounded Metrics
-            eval_results_human_grounded = {
-                'Precision@20': np.mean(all_precisions_at_20) if all_precisions_at_20 else 'N/A',
-                'Recall@20': 'N/A (Requires total relevant in corpus)', # Kept as N/A
-                'MAP@20': np.mean(all_average_precisions_at_20) if all_average_precisions_at_20 else 'N/A',
-                'MRR@20': np.mean(all_reciprocal_ranks_at_20) if all_reciprocal_ranks_at_20 else 'N/A',
+            eval_results = {
+                'Precision@20': np.mean(all_p_at_20) if all_p_at_20 else 'N/A',
+                'MAP@20': np.mean(all_map_at_20) if all_map_at_20 else 'N/A',
+                'MRR@20': np.mean(all_mrr_at_20) if all_mrr_at_20 else 'N/A',
+                'HR@20': np.mean(all_hr_at_20) if all_hr_at_20 else 'N/A', # Hit Ratio
                 'NDCG@20 (Binary)': np.mean(all_binary_ndcg_at_20) if all_binary_ndcg_at_20 else 'N/A',
                 'NDCG@20 (Graded)': np.mean(all_graded_ndcg_at_20) if all_graded_ndcg_at_20 else 'N/A'
             }
 
-            st.subheader("Human-Grounded Metrics (on Top 20 Initial Recommendations)")
-            if num_cvs_with_anns > 0:
-                st.write(f"Calculated based on {num_cvs_with_anns} CVs with recommendations and annotations.")
+            st.subheader("Human-Grounded Evaluation Metrics Summary")
+            if num_cvs_evaluated > 0:
+                st.write(f"Calculated based on {num_cvs_evaluated} CVs with recommendations and annotations.")
             else:
-                st.warning("No CVs with annotations were found to calculate metrics.")
-                return # Stop if no data to show
+                st.warning("No CVs with annotations were found to calculate metrics."); return 
 
-            metric_layout_config_hg = {
-                'Precision@20': {'format_percent': True, 'help': "Average P@20. Proportion of top 20 recommended items that are relevant (binary)."},
-                'Recall@20': {'format_percent': True, 'help': "Recall@20 is complex without knowing total relevant items per CV in the entire corpus."},
-                'MAP@20': {'format_percent': True, 'help': "Mean Average Precision@20 (binary relevance)."},
-                'MRR@20': {'format_percent': False, 'help': "Mean Reciprocal Rank@20 (binary relevance)."},
-                'NDCG@20 (Binary)': {'format_percent': False, 'help': "Avg NDCG@20 using binary relevance."},
-                'NDCG@20 (Graded)': {'format_percent': False, 'help': "Avg NDCG@20 using average annotator scores as graded relevance."}
+            metric_config = {
+                'Precision@20': {'fmt': "{:.2%}", 'help': "Avg P@20. Proportion of top 20 relevant items (binary).", 'color': "off"},
+                'MAP@20': {'fmt': "{:.2%}", 'help': "Mean Average Precision@20 (binary relevance).", 'color': "off"},
+                'MRR@20': {'fmt': "{:.4f}", 'help': "Mean Reciprocal Rank@20 (binary relevance).", 'color': "normal"},
+                'HR@20': {'fmt': "{:.2%}", 'help': "Hit Ratio@20. Proportion of CVs with at least one relevant item in top 20.", 'color': "normal"},
+                'NDCG@20 (Binary)': {'fmt': "{:.4f}", 'help': "Avg NDCG@20 using binary relevance.", 'color': "inverse"},
+                'NDCG@20 (Graded)': {'fmt': "{:.4f}", 'help': "Avg NDCG@20 using average annotator scores as graded relevance.", 'color': "inverse"}
             }
-            metric_keys_ordered_hg = ['Precision@20', 'Recall@20', 'MAP@20', 'MRR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']
             
-            row1_hg_cols = st.columns(3)
-            row2_hg_cols = st.columns(3)
-            all_hg_display_cols = row1_hg_cols + row2_hg_cols
+            # Display in 2 rows, 3 cols each
+            keys_to_display = ['Precision@20', 'MAP@20', 'MRR@20', 'HR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']
+            
+            cols1 = st.columns(3)
+            cols2 = st.columns(3)
+            
+            display_cols_map = {0:cols1[0], 1:cols1[1], 2:cols1[2], 3:cols2[0], 4:cols2[1], 5:cols2[2]}
 
-            for i, label in enumerate(metric_keys_ordered_hg):
-                if label in eval_results_human_grounded:
-                    value = eval_results_human_grounded[label]
-                    config = metric_layout_config_hg[label]
-                    col_to_use = all_hg_display_cols[i % len(all_hg_display_cols)]
+            for i, key in enumerate(keys_to_display):
+                if key in eval_results:
+                    value = eval_results[key]
+                    cfg = metric_config[key]
+                    col = display_cols_map[i]
+                    
                     val_str = "N/A"
                     if isinstance(value, (int, float, np.number)) and not (isinstance(value, float) and np.isnan(value)):
-                        val_str = f"{value*100:.2f}%" if config['format_percent'] else f"{float(value):.4f}"
-                    elif isinstance(value, str): val_str = value 
-                    
-                    d_color = "normal" # Default
-                    if "NDCG" in label: d_color = "inverse"
-                    elif "Precision" in label or "MAP" in label: d_color = "off" 
-                    
-                    col_to_use.metric(label=label, value=val_str, delta_color=d_color, help=config['help'])
+                        if '%' in cfg['fmt']:
+                             val_str = cfg['fmt'].format(value * 100)
+                        else:
+                             val_str = cfg['fmt'].format(value)
+                    elif isinstance(value, str):
+                        val_str = value
+                    col.metric(label=key, value=val_str, delta_color=cfg['color'], help=cfg['help'])
     return
 
 # --- Main App Logic (Page Navigation) ---
