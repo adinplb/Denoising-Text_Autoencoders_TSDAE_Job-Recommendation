@@ -13,7 +13,7 @@ from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm 
 from sentence_transformers import SentenceTransformer
-# from sentence_transformers.evaluation import RerankingEvaluator 
+# from sentence_transformers.evaluation import RerankingEvaluator # Not used
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import random
@@ -50,12 +50,11 @@ download_nltk_resources()
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/largedataset-JRec/refs/heads/main/Filtered_Jobs_4000.csv'
 
-FEATURES_TO_COMBINE = [ # Used to create 'combined_jobs'
+FEATURES_TO_COMBINE = [ 
     'Status', 'Title', 'Position', 'Company', 
     'City', 'State.Name', 'Industry', 'Job.Description', 
     'Employment.Type', 'Education.Required'
 ]
-# UPDATED: Features to be available for display in Job Rec and Annotation pages
 JOB_DETAIL_FEATURES_TO_DISPLAY = [
     'Company', 'Status', 'City', 'Job.Description', 'Employment.Type', 
     'Position', 'Industry', 'Education.Required', 'State.Name'
@@ -102,22 +101,18 @@ def load_and_combine_data_from_url(url, features_to_combine_list, detail_feature
             return None
         df_full['Job.ID'] = df_full['Job.ID'].astype(str)
 
-        # Determine which of the features_to_combine are actually in the loaded dataframe
         existing_features_to_combine = [col for col in features_to_combine_list if col in df_full.columns]
         missing_features_for_combine = [col for col in features_to_combine_list if col not in df_full.columns]
         if missing_features_for_combine:
             st.warning(f"The following features intended for combination were not found: {', '.join(missing_features_for_combine)}")
 
-        # Ensure all requested detail features and combination features are loaded
-        cols_to_load_set = set(['Job.ID', 'Title']) # Start with essential columns
+        cols_to_load_set = set(['Job.ID', 'Title']) 
         cols_to_load_set.update(existing_features_to_combine)
         cols_to_load_set.update(detail_features_to_ensure)
         
-        # Filter df_full to only include columns that actually exist in the CSV
         actual_cols_to_load = [col for col in list(cols_to_load_set) if col in df_full.columns]
         df = df_full[actual_cols_to_load].copy() 
 
-        # Create 'combined_jobs'
         for feature in existing_features_to_combine: 
             if feature in df.columns: 
                 df[feature] = df[feature].fillna('').astype(str)
@@ -317,7 +312,6 @@ def home_page():
     st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
 
     if st.session_state.get('data') is None:
-        # Pass both lists of features to ensure all necessary columns are loaded
         st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE, JOB_DETAIL_FEATURES_TO_DISPLAY)
     
     data_df = st.session_state.get('data')
@@ -344,7 +338,6 @@ def home_page():
 
         st.subheader('Search Word in Feature') 
         search_word = st.text_input("Enter word to search:", key="home_search_word_new") 
-        # Ensure all potentially relevant columns are available for search selection
         all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES_TO_DISPLAY
         searchable_cols = sorted(list(set(col for col in all_available_cols_for_search if col in data_df.columns)))
         search_column = st.selectbox("Select feature to search in:", [''] + searchable_cols, key="home_search_column_new") 
@@ -763,11 +756,12 @@ def job_recommendation_page():
     temp_df_for_align = pd.DataFrame({'Job.ID': job_emb_ids_for_rec, 'emb_order': np.arange(len(job_emb_ids_for_rec))})
     
     # Ensure all JOB_DETAIL_FEATURES_TO_DISPLAY are included when fetching details
-    cols_to_fetch_for_rec = list(set(['Job.ID', 'Title'] + JOB_DETAIL_FEATURES_TO_DISPLAY))
+    # Also include 'combined_jobs' as it's the source text for 'processed_text'
+    cols_to_fetch_for_rec = list(set(['Job.ID', 'Title', 'combined_jobs'] + JOB_DETAIL_FEATURES_TO_DISPLAY))
     if 'cluster' in main_data.columns: cols_to_fetch_for_rec.append('cluster')
-    # Ensure all selected columns exist in main_data
+    
     cols_to_fetch_for_rec = [col for col in cols_to_fetch_for_rec if col in main_data.columns]
-    if 'Job.ID' not in cols_to_fetch_for_rec: cols_to_fetch_for_rec.insert(0,'Job.ID') # Ensure Job.ID is present
+    if 'Job.ID' not in cols_to_fetch_for_rec : cols_to_fetch_for_rec.insert(0,'Job.ID')
 
     main_data_subset_for_rec = main_data[cols_to_fetch_for_rec].drop_duplicates(subset=['Job.ID'], keep='first')
     jobs_for_sim_df = pd.merge(temp_df_for_align, main_data_subset_for_rec, on='Job.ID', how='left').sort_values('emb_order').reset_index(drop=True)
@@ -775,19 +769,16 @@ def job_recommendation_page():
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
         st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
 
-    # Add multiselect for choosing which details to display in the table
-    default_details_to_show = ['Company', 'City', 'Position']
-    # Filter default_details_to_show to only those present in jobs_for_sim_df
-    default_details_filtered = [col for col in default_details_to_show if col in jobs_for_sim_df.columns]
+    # Multiselect for choosing which details to display in the table on this page
+    default_details_to_show_rec_page = ['Company', 'City', 'Position']
+    available_options_for_rec_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
+    default_details_filtered_rec_page = [col for col in default_details_to_show_rec_page if col in available_options_for_rec_display]
     
-    # Filter JOB_DETAIL_FEATURES_TO_DISPLAY to only those present in jobs_for_sim_df for options
-    available_detail_options = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
-
-    selected_details_for_display = st.multiselect(
-        "Select additional job details to display in the table:",
-        options=available_detail_options,
-        default=default_details_filtered,
-        key="job_rec_detail_multiselect"
+    selected_details_for_rec_display = st.multiselect(
+        "Select additional job details to display in the recommendations table:",
+        options=available_options_for_rec_display,
+        default=default_details_filtered_rec_page,
+        key="job_rec_detail_multiselect_page"
     )
 
     if st.button("Generate Recommendations", key="gen_recs_b_main"):
@@ -811,16 +802,15 @@ def job_recommendation_page():
                 recommended_j_df = temp_df_rec_with_sim.sort_values(by='similarity_score', ascending=False).head(20)
                 
                 if not recommended_j_df.empty:
-                    # Columns to always show + user selected details
-                    display_cols_on_rec_page = ['Job.ID', 'Title', 'similarity_score'] + selected_details_for_display
-                    # Ensure unique columns and that they exist
-                    display_cols_on_rec_page = sorted(list(set(col for col in display_cols_on_rec_page if col in recommended_j_df.columns)))
-                    if 'Job.ID' not in display_cols_on_rec_page: display_cols_on_rec_page.insert(0, 'Job.ID') # Ensure Job.ID is first
-                    if 'Title' not in display_cols_on_rec_page and 'Title' in recommended_j_df.columns: display_cols_on_rec_page.insert(1, 'Title')
-
-
-                    st.dataframe(recommended_j_df[display_cols_on_rec_page], use_container_width=True)
-                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df # Store with all details
+                    # Columns to always show + user selected details for this page's table
+                    display_cols_on_this_page = ['Job.ID', 'Title', 'similarity_score'] + selected_details_for_rec_display
+                    display_cols_on_this_page = sorted(list(set(col for col in display_cols_on_this_page if col in recommended_j_df.columns)))
+                    if 'Job.ID' not in display_cols_on_this_page: display_cols_on_this_page.insert(0, 'Job.ID')
+                    if 'Title' not in display_cols_on_this_page and 'Title' in recommended_j_df.columns: display_cols_on_this_page.insert(1, 'Title')
+                    
+                    st.dataframe(recommended_j_df[display_cols_on_this_page], use_container_width=True)
+                    # Store the full recommended_j_df (with all possible details) for annotation page
+                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df
                 else: 
                     st.info(f"No recommendations for {cv_file_n}.")
                 st.write("---") 
@@ -878,8 +868,12 @@ def annotation_page():
                         'similarity_score': rec_row_init['similarity_score'], 
                         'cluster': rec_row_init.get('cluster', pd.NA)
                     }
-                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY: # Add all detail columns
+                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY: 
                         record_init[detail_col] = rec_row_init.get(detail_col, '') 
+                    # Ensure Job.Description is included specifically if not in JOB_DETAIL_FEATURES_TO_DISPLAY but present
+                    if 'Job.Description' not in record_init and 'Job.Description' in rec_row_init:
+                        record_init['Job.Description'] = rec_row_init.get('Job.Description', '')
+
 
                     for i_ann, slot_name_ann in enumerate(ANNOTATORS):
                         record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
@@ -905,23 +899,22 @@ def annotation_page():
         form_input_for_current_annotator = [] 
         expand_cv_default = len(st.session_state['all_recommendations_for_annotation']) == 1
 
-        # Feature selection for annotation display
-        # Get available detail columns from the first recommendation df as an example
-        available_details_for_ann = []
+        # Determine available detail columns from the first set of recommendations
+        available_details_for_ann_display = []
         if st.session_state['all_recommendations_for_annotation']:
-            first_cv_key = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
-            first_rec_df = st.session_state['all_recommendations_for_annotation'][first_cv_key]
-            available_details_for_ann = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in first_rec_df.columns]
+            first_cv_key_ann = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
+            if first_cv_key_ann in st.session_state['all_recommendations_for_annotation']:
+                first_rec_df_ann = st.session_state['all_recommendations_for_annotation'][first_cv_key_ann]
+                available_details_for_ann_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in first_rec_df_ann.columns]
         
-        default_details_for_ann = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann]
+        default_details_for_ann_display = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann_display]
         
-        selected_details_for_annotation = st.multiselect(
+        selected_details_for_annotation_display = st.multiselect(
             "Select job details to view during annotation:",
-            options=available_details_for_ann,
-            default=default_details_for_ann,
-            key=f"annotation_detail_multiselect_{current_annotator_slot}"
+            options=available_details_for_ann_display,
+            default=default_details_for_ann_display,
+            key=f"annotation_detail_multiselect_widget_{current_annotator_slot}"
         )
-
 
         for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
             recommendations_df_unique = recommendations_df_original.drop_duplicates(subset=['Job.ID'], keep='first')
@@ -932,7 +925,7 @@ def annotation_page():
                     st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann.get('Title', 'N/A')}")
                     
                     # Display selected details
-                    for detail_key in selected_details_for_annotation: # Use selected details
+                    for detail_key in selected_details_for_annotation_display: 
                         if detail_key in job_row_ann and pd.notna(job_row_ann[detail_key]):
                             detail_value = job_row_ann[detail_key]
                             if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 200:
