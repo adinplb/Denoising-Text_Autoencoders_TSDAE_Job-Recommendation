@@ -13,7 +13,7 @@ from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm 
 from sentence_transformers import SentenceTransformer
-# from sentence_transformers.evaluation import RerankingEvaluator # Not used
+# from sentence_transformers.evaluation import RerankingEvaluator 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import random
@@ -79,8 +79,10 @@ if 'uploaded_cvs_data' not in st.session_state:
     st.session_state['uploaded_cvs_data'] = [] 
 if 'all_recommendations_for_annotation' not in st.session_state:
     st.session_state['all_recommendations_for_annotation'] = {} 
-if 'collected_annotations' not in st.session_state:
+if 'collected_annotations' not in st.session_state: 
     st.session_state['collected_annotations'] = pd.DataFrame()
+if 'uploaded_annotation_data' not in st.session_state: # For storing DF from uploaded annotation CSV
+    st.session_state['uploaded_annotation_data'] = None
 if 'annotator_details' not in st.session_state:
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
 if 'current_annotator_slot_for_input' not in st.session_state: 
@@ -755,9 +757,7 @@ def job_recommendation_page():
         
     temp_df_for_align = pd.DataFrame({'Job.ID': job_emb_ids_for_rec, 'emb_order': np.arange(len(job_emb_ids_for_rec))})
     
-    # Ensure all JOB_DETAIL_FEATURES_TO_DISPLAY are included when fetching details
-    # Also include 'combined_jobs' as it's the source text for 'processed_text'
-    cols_to_fetch_for_rec = list(set(['Job.ID', 'Title', 'combined_jobs'] + JOB_DETAIL_FEATURES_TO_DISPLAY))
+    cols_to_fetch_for_rec = list(set(['Job.ID', 'Title'] + JOB_DETAIL_FEATURES_TO_DISPLAY + ['combined_jobs'])) 
     if 'cluster' in main_data.columns: cols_to_fetch_for_rec.append('cluster')
     
     cols_to_fetch_for_rec = [col for col in cols_to_fetch_for_rec if col in main_data.columns]
@@ -769,14 +769,15 @@ def job_recommendation_page():
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
         st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
 
-    # Multiselect for choosing which details to display in the table on this page
-    default_details_to_show_rec_page = ['Company', 'City', 'Position']
+    default_details_to_show_rec_page = ['Company', 'City', 'Position'] 
     available_options_for_rec_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
+    if 'Job.Description' not in available_options_for_rec_display and 'Job.Description' in jobs_for_sim_df.columns: # Ensure Job.Description can be selected
+        available_options_for_rec_display.append('Job.Description')
     default_details_filtered_rec_page = [col for col in default_details_to_show_rec_page if col in available_options_for_rec_display]
     
     selected_details_for_rec_display = st.multiselect(
         "Select additional job details to display in the recommendations table:",
-        options=available_options_for_rec_display,
+        options=sorted(list(set(available_options_for_rec_display))), 
         default=default_details_filtered_rec_page,
         key="job_rec_detail_multiselect_page"
     )
@@ -802,15 +803,13 @@ def job_recommendation_page():
                 recommended_j_df = temp_df_rec_with_sim.sort_values(by='similarity_score', ascending=False).head(20)
                 
                 if not recommended_j_df.empty:
-                    # Columns to always show + user selected details for this page's table
                     display_cols_on_this_page = ['Job.ID', 'Title', 'similarity_score'] + selected_details_for_rec_display
                     display_cols_on_this_page = sorted(list(set(col for col in display_cols_on_this_page if col in recommended_j_df.columns)))
-                    if 'Job.ID' not in display_cols_on_this_page: display_cols_on_this_page.insert(0, 'Job.ID')
-                    if 'Title' not in display_cols_on_this_page and 'Title' in recommended_j_df.columns: display_cols_on_this_page.insert(1, 'Title')
+                    if 'Title' in display_cols_on_this_page: display_cols_on_this_page.remove('Title'); display_cols_on_this_page.insert(0, 'Title')
+                    if 'Job.ID' in display_cols_on_this_page: display_cols_on_this_page.remove('Job.ID'); display_cols_on_this_page.insert(0, 'Job.ID')
                     
                     st.dataframe(recommended_j_df[display_cols_on_this_page], use_container_width=True)
-                    # Store the full recommended_j_df (with all possible details) for annotation page
-                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df
+                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df 
                 else: 
                     st.info(f"No recommendations for {cv_file_n}.")
                 st.write("---") 
@@ -868,12 +867,8 @@ def annotation_page():
                         'similarity_score': rec_row_init['similarity_score'], 
                         'cluster': rec_row_init.get('cluster', pd.NA)
                     }
-                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY: 
+                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY + ['combined_jobs']: 
                         record_init[detail_col] = rec_row_init.get(detail_col, '') 
-                    # Ensure Job.Description is included specifically if not in JOB_DETAIL_FEATURES_TO_DISPLAY but present
-                    if 'Job.Description' not in record_init and 'Job.Description' in rec_row_init:
-                        record_init['Job.Description'] = rec_row_init.get('Job.Description', '')
-
 
                     for i_ann, slot_name_ann in enumerate(ANNOTATORS):
                         record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
@@ -899,19 +894,22 @@ def annotation_page():
         form_input_for_current_annotator = [] 
         expand_cv_default = len(st.session_state['all_recommendations_for_annotation']) == 1
 
-        # Determine available detail columns from the first set of recommendations
+        # Determine available detail columns for the multiselect options
+        all_possible_detail_cols = list(set(JOB_DETAIL_FEATURES_TO_DISPLAY + ['Job.Description'])) # Ensure Job.Description is an option
         available_details_for_ann_display = []
         if st.session_state['all_recommendations_for_annotation']:
             first_cv_key_ann = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
             if first_cv_key_ann in st.session_state['all_recommendations_for_annotation']:
                 first_rec_df_ann = st.session_state['all_recommendations_for_annotation'][first_cv_key_ann]
-                available_details_for_ann_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in first_rec_df_ann.columns]
+                available_details_for_ann_display = [col for col in all_possible_detail_cols if col in first_rec_df_ann.columns]
         
-        default_details_for_ann_display = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann_display]
+        default_details_for_ann_display = [col for col in ['Company', 'Job.Description', 'Employment.Type', 'Position'] if col in available_details_for_ann_display]
         
+        # Place multiselect outside the CV loop, but inside the form if its selection should be part of the submission
+        # Or, if it's just for display control, it can be outside the form. Let's keep it inside for now to control view per annotator session.
         selected_details_for_annotation_display = st.multiselect(
             "Select job details to view during annotation:",
-            options=available_details_for_ann_display,
+            options=sorted(list(set(available_details_for_ann_display))), 
             default=default_details_for_ann_display,
             key=f"annotation_detail_multiselect_widget_{current_annotator_slot}"
         )
@@ -928,10 +926,11 @@ def annotation_page():
                     for detail_key in selected_details_for_annotation_display: 
                         if detail_key in job_row_ann and pd.notna(job_row_ann[detail_key]):
                             detail_value = job_row_ann[detail_key]
-                            if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 200:
-                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value[:200]}...")
+                            display_label = detail_key.replace('.', ' ').replace('_', ' ').title() 
+                            if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 150: 
+                                st.caption(f"*{display_label}:* {detail_value[:150]}...")
                             else:
-                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value}")
+                                st.caption(f"*{display_label}:* {detail_value}")
                     
                     st.caption(f"*Similarity Score:* {job_row_ann['similarity_score']:.4f} | *Cluster:* {job_row_ann.get('cluster', 'N/A')}")
                     st.markdown("---") 
@@ -1033,10 +1032,48 @@ def evaluation_page():
     st.write("Evaluates top 20 recommendations based on human annotations.")
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
-    anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
     
+    st.sidebar.subheader("Evaluation Data Source")
+    annotation_source = st.sidebar.radio(
+        "Use annotations from:",
+        ("Current Session", "Uploaded CSV File"),
+        key="eval_annotation_source_selector"
+    )
+
+    anns_df = None
+    if annotation_source == "Uploaded CSV File":
+        uploaded_ann_file = st.sidebar.file_uploader("Upload Annotation CSV", type=['csv'], key="eval_ann_uploader")
+        if uploaded_ann_file is not None:
+            try:
+                anns_df = pd.read_csv(uploaded_ann_file)
+                required_ann_cols = ['cv_filename', 'job_id'] + [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS))]
+                if not all(col in anns_df.columns for col in required_ann_cols):
+                    st.error(f"Uploaded CSV is missing some required columns. Expected at least: {', '.join(required_ann_cols)}")
+                    anns_df = None 
+                else:
+                    st.sidebar.success(f"Using uploaded annotation file: {uploaded_ann_file.name}")
+                    anns_df['job_id'] = anns_df['job_id'].astype(str)
+                    st.session_state['uploaded_annotation_data'] = anns_df 
+
+            except Exception as e:
+                st.error(f"Error reading or processing uploaded annotation CSV: {e}")
+                anns_df = None
+        elif st.session_state.get('uploaded_annotation_data') is not None: 
+            anns_df = st.session_state.uploaded_annotation_data
+            st.sidebar.info("Using previously uploaded annotation data.")
+        else:
+            st.sidebar.warning("No annotation CSV uploaded. Please upload or switch to 'Current Session'.")
+    
+    if anns_df is None: 
+        anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
+        if annotation_source == "Uploaded CSV File": 
+             st.sidebar.info("Falling back to annotations from current session.")
+        else:
+             st.sidebar.info("Using annotations collected in the current session.")
+
+
     if not all_recommendations: st.warning("No recommendations to evaluate. Run 'Job Recommendation' first."); return
-    if anns_df.empty: st.warning("No annotations collected. Annotate first."); return
+    if anns_df.empty: st.warning("No annotation data available. Annotate or upload first."); return
 
     st.subheader("Evaluation Parameters")
     st.info("The 'Binary Relevance Threshold' converts average graded annotator scores (0-3) into binary 'relevant' (1) or 'not relevant' (0) for calculating P@20, MAP@20, MRR@20, HR@20, and Binary NDCG@20.")
@@ -1044,11 +1081,11 @@ def evaluation_page():
     
     if st.button("Run Evaluation on Top 20 Recommendations", key="run_eval_final_btn"):
         with st.spinner("Calculating human-grounded evaluation metrics..."):
-            all_p_at_20, all_map_at_20, all_mrr_at_20, all_hr_at_20 = [], [], [], []
-            all_binary_ndcg_at_20, all_graded_ndcg_at_20 = [], []
+            
+            per_cv_metrics_list = [] 
 
             relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
-            if not relevance_cols: st.error("No annotator relevance columns in annotations."); return
+            if not relevance_cols: st.error("No annotator relevance columns in the annotation data."); return
 
             num_cvs_evaluated = 0
             for cv_filename, recommended_jobs_df in all_recommendations.items():
@@ -1081,34 +1118,49 @@ def evaluation_page():
                     binary_relevance_scores.append(1 if avg_annotator_score >= relevance_threshold_binary else 0)
                 
                 k_cutoff = 20 
+                cv_p_at_20 = sum(binary_relevance_scores) / len(binary_relevance_scores) if binary_relevance_scores else 0.0
+                cv_hr_at_20 = 1 if any(binary_relevance_scores) else 0
+                cv_map_at_20 = _calculate_average_precision(binary_relevance_scores, k_cutoff)
                 
-                if binary_relevance_scores: 
-                    all_p_at_20.append(sum(binary_relevance_scores) / len(binary_relevance_scores))
-                    all_hr_at_20.append(1 if any(binary_relevance_scores) else 0)
-
-                all_map_at_20.append(_calculate_average_precision(binary_relevance_scores, k_cutoff))
-                
-                current_rr = 0.0
+                cv_mrr_at_20 = 0.0
                 for r, is_rel in enumerate(binary_relevance_scores): 
-                    if is_rel: current_rr = 1.0 / (r + 1); break
-                all_mrr_at_20.append(current_rr)
+                    if is_rel: cv_mrr_at_20 = 1.0 / (r + 1); break
+                
+                actual_k = len(binary_relevance_scores)
+                cv_binary_ndcg_at_20 = ndcg_score([binary_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k) if actual_k == len(model_similarity_scores[:actual_k]) and actual_k > 0 else 0.0
+                cv_graded_ndcg_at_20 = ndcg_score([graded_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k) if actual_k == len(graded_relevance_scores) and actual_k == len(model_similarity_scores[:actual_k]) and actual_k > 0 else 0.0
 
-                actual_k = len(binary_relevance_scores) 
-                if actual_k == len(model_similarity_scores) and actual_k > 0:
-                    all_binary_ndcg_at_20.append(ndcg_score([binary_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k))
-                if actual_k == len(graded_relevance_scores) and actual_k == len(model_similarity_scores) and actual_k > 0:
-                     all_graded_ndcg_at_20.append(ndcg_score([graded_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k))
+                per_cv_metrics_list.append({
+                    'CV Filename': cv_filename,
+                    'P@20': cv_p_at_20, 'MAP@20': cv_map_at_20, 'MRR@20': cv_mrr_at_20, 'HR@20': cv_hr_at_20,
+                    'NDCG@20 (Binary)': cv_binary_ndcg_at_20, 'NDCG@20 (Graded)': cv_graded_ndcg_at_20
+                })
 
-            eval_results = {
-                'Precision@20': np.mean(all_p_at_20) if all_p_at_20 else 0.0,
-                'MAP@20': np.mean(all_map_at_20) if all_map_at_20 else 0.0,
-                'MRR@20': np.mean(all_mrr_at_20) if all_mrr_at_20 else 0.0,
-                'HR@20': np.mean(all_hr_at_20) if all_hr_at_20 else 0.0,
-                'NDCG@20 (Binary)': np.mean(all_binary_ndcg_at_20) if all_binary_ndcg_at_20 else 0.0,
-                'NDCG@20 (Graded)': np.mean(all_graded_ndcg_at_20) if all_graded_ndcg_at_20 else 0.0
-            }
+            st.subheader("Per-CV Evaluation Metrics")
+            if per_cv_metrics_list:
+                per_cv_df = pd.DataFrame(per_cv_metrics_list)
+                per_cv_df_display = per_cv_df.copy()
+                for col in ['P@20', 'MAP@20', 'HR@20']:
+                    if col in per_cv_df_display.columns:
+                         per_cv_df_display[col] = (per_cv_df_display[col] * 100).round(2).astype(str) + '%'
+                for col in ['MRR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']:
+                     if col in per_cv_df_display.columns:
+                        per_cv_df_display[col] = per_cv_df_display[col].round(4)
+                st.dataframe(per_cv_df_display.set_index('CV Filename'))
+                
+                avg_metrics_dict = {
+                    'P@20': per_cv_df['P@20'].mean(),
+                    'MAP@20': per_cv_df['MAP@20'].mean(),
+                    'MRR@20': per_cv_df['MRR@20'].mean(),
+                    'HR@20': per_cv_df['HR@20'].mean(),
+                    'NDCG@20 (Binary)': per_cv_df['NDCG@20 (Binary)'].mean(),
+                    'NDCG@20 (Graded)': per_cv_df['NDCG@20 (Graded)'].mean()
+                }
+            else:
+                st.info("No CVs were evaluated (perhaps no recommendations or no matching annotations).")
+                avg_metrics_dict = {key: 'N/A' for key in ['P@20', 'MAP@20', 'MRR@20', 'HR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']}
 
-            st.subheader("Human-Grounded Evaluation Metrics Summary")
+            st.subheader("Average Human-Grounded Evaluation Metrics Summary")
             if num_cvs_evaluated > 0: st.write(f"Calculated based on {num_cvs_evaluated} CVs.")
             else: st.warning("No CVs with annotations found to calculate metrics."); return 
 
@@ -1126,8 +1178,8 @@ def evaluation_page():
             metric_cols_r2 = st.columns(3)
             
             for i, key in enumerate(keys_to_display):
-                if key in eval_results:
-                    value = eval_results[key]
+                if key in avg_metrics_dict: 
+                    value = avg_metrics_dict[key]
                     cfg = metric_config[key]
                     current_col = metric_cols_r1[i] if i < 3 else metric_cols_r2[i-3]
                     
@@ -1136,7 +1188,7 @@ def evaluation_page():
                         val_str = cfg['fmt'].format(value * 100 if '%' in cfg['fmt'] else value)
                     elif isinstance(value, str): val_str = value
                     
-                    current_col.metric(label=key, value=val_str, delta_color=cfg['color'], help=cfg['help'])
+                    current_col.metric(label=f"Average {key}", value=val_str, delta_color=cfg['color'], help=cfg['help'])
     return
 
 # --- Main App Logic (Page Navigation) ---
