@@ -13,7 +13,7 @@ from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm 
 from sentence_transformers import SentenceTransformer
-# from sentence_transformers.evaluation import RerankingEvaluator # Not used as per previous discussion
+# from sentence_transformers.evaluation import RerankingEvaluator 
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import random
@@ -55,6 +55,11 @@ FEATURES_TO_COMBINE = [
     'City', 'State.Name', 'Industry', 'Job.Description', 
     'Employment.Type', 'Education.Required'
 ]
+JOB_DETAIL_FEATURES_TO_DISPLAY = [
+    'Company', 'Status', 'City', 'Job.Description', 'Employment.Type', 
+    'Position', 'Industry', 'Education.Required', 'State.Name'
+] 
+
 N_CLUSTERS = 20 
 ANNOTATORS = ["Annotator 1", "Annotator 2", "Annotator 3", "Annotator 4", "Annotator 5"]
 
@@ -70,8 +75,7 @@ if 'tsdae_embeddings' not in st.session_state:
     st.session_state['tsdae_embeddings'] = None 
 if 'tsdae_embedding_job_ids' not in st.session_state: 
     st.session_state['tsdae_embedding_job_ids'] = None
-if 'job_clusters_raw' not in st.session_state: 
-    st.session_state['job_clusters_raw'] = None
+# job_clusters_raw is removed as cluster info is directly merged into st.session_state.data
 if 'uploaded_cvs_data' not in st.session_state:
     st.session_state['uploaded_cvs_data'] = [] 
 if 'all_recommendations_for_annotation' not in st.session_state:
@@ -88,7 +92,7 @@ if 'annotators_saved_status' not in st.session_state:
 
 # --- Helper Functions ---
 @st.cache_data(show_spinner='Loading job data...')
-def load_and_combine_data_from_url(url, features_to_combine): # Changed function name from load_data_from_url
+def load_and_combine_data_from_url(url, features_to_combine):
     try:
         df_full = pd.read_csv(url) 
         st.success('Successfully loaded data from URL!')
@@ -102,23 +106,20 @@ def load_and_combine_data_from_url(url, features_to_combine): # Changed function
         existing_features_to_combine = [col for col in features_to_combine if col in df_full.columns]
         missing_features = [col for col in features_to_combine if col not in df_full.columns]
         if missing_features:
-            st.warning(f"The following features were not found in the dataset and will be ignored in the combination: {', '.join(missing_features)}")
+            st.warning(f"The following features were not found and will be ignored in combination: {', '.join(missing_features)}")
 
-        cols_to_keep_initially = ['Job.ID'] + existing_features_to_combine
-        if 'Title' in df_full.columns and 'Title' not in cols_to_keep_initially: # Ensure Title is kept if present
-            cols_to_keep_initially.append('Title')
-            
-        df = df_full[list(set(cols_to_keep_initially))].copy() 
+        cols_to_load = list(set(['Job.ID', 'Title'] + existing_features_to_combine + JOB_DETAIL_FEATURES_TO_DISPLAY))
+        cols_to_load = [col for col in cols_to_load if col in df_full.columns]
+        df = df_full[cols_to_load].copy() 
 
-        for feature in existing_features_to_combine:
-            df[feature] = df[feature].fillna('').astype(str)
+        for feature in existing_features_to_combine: 
+            if feature in df.columns: 
+                df[feature] = df[feature].fillna('').astype(str)
         
         df['combined_jobs'] = df[existing_features_to_combine].agg(' '.join, axis=1)
         df['combined_jobs'] = df['combined_jobs'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
         st.success("Column 'combined_jobs' created successfully.")
-        # Ensure 'Title' column exists in the final df if it was in the original full_df,
-        # as it's used in multiple places.
         if 'Title' not in df.columns and 'Title' in df_full.columns:
              df['Title'] = df_full['Title']
         return df
@@ -160,7 +161,6 @@ def preprocess_text(text):
     stemmed_words = [porter.stem(w) for w in filtered_words]
     return " ".join(stemmed_words)
 
-# Re-inserting the denoise_text function definition
 def denoise_text(text_to_denoise, method='a', del_ratio=0.6, word_freq_dict=None, freq_threshold=100):
     if not isinstance(text_to_denoise, str) or not text_to_denoise.strip():
         return "" 
@@ -322,11 +322,6 @@ def home_page():
         cols_to_preview = ['Job.ID']
         if 'Title' in data_df.columns: cols_to_preview.append('Title')
         if 'combined_jobs' in data_df.columns: cols_to_preview.append('combined_jobs')
-        
-        for col in FEATURES_TO_COMBINE: # Add other defined features for preview if they exist
-            if col in data_df.columns and col not in cols_to_preview:
-                cols_to_preview.append(col)
-        
         st.dataframe(data_df[cols_to_preview].head(), use_container_width=True)
 
         st.subheader('Data Summary') 
@@ -424,8 +419,8 @@ def tsdae_page():
     if st.session_state.get('data') is None or 'processed_text' not in st.session_state.get('data', pd.DataFrame()).columns:
         st.warning("Job data must be loaded & preprocessed (from 'combined_jobs') first. Visit 'Preprocessing' page.") 
         return
-    # ... (rest of TSDAE logic using st.session_state.data['processed_text']) ...
-    bert_model = load_bert_model() # Moved here to ensure it's loaded before use
+    
+    bert_model = load_bert_model() 
     if bert_model is None: 
         st.error("BERT model could not be loaded for TSDAE page."); return
 
@@ -443,20 +438,55 @@ def tsdae_page():
         word_freq_dict_tsdae = {word.lower(): all_words.count(word.lower()) for word in set(all_words)}
         if not word_freq_dict_tsdae: st.warning("Word frequency dictionary for TSDAE is empty (all processed texts might be empty).")
 
-        with st.spinner("Applying Noise Method A..."):
-            data_tsdae_local['noisy_text_a'] = data_tsdae_local['processed_text'].fillna('').astype(str).apply(
-                lambda x: denoise_text(x, method='a', del_ratio=deletion_ratio)
-            )
-        with st.spinner("Applying Noise Method B..."):
-            data_tsdae_local['noisy_text_b'] = data_tsdae_local['noisy_text_a'].astype(str).apply(
-                lambda x: denoise_text(x, method='b', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold)
-            )
-        with st.spinner("Applying Noise Method C..."):
-            data_tsdae_local['final_noisy_text'] = data_tsdae_local['noisy_text_b'].astype(str).apply(
-                lambda x: denoise_text(x, method='c', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold)
-            )
-        st.session_state['data'] = data_tsdae_local # Update session state
-        st.success("Noise application complete.")
+        st.markdown("---")
+        st.markdown("##### Applying Noise Method A (Random Deletion)")
+        noisy_text_stage_a = []
+        source_texts_a = data_tsdae_local['processed_text'].fillna('').astype(str).tolist()
+        total_items_a = len(source_texts_a)
+        progress_bar_a = st.progress(0)
+        status_text_a = st.empty()
+        for idx, text_content in enumerate(source_texts_a):
+            noisy_text_stage_a.append(denoise_text(text_content, method='a', del_ratio=deletion_ratio))
+            if total_items_a > 0:
+                progress_bar_a.progress((idx + 1) / total_items_a)
+                status_text_a.text(f"Method A: Processed {idx + 1}/{total_items_a} entries.")
+        data_tsdae_local['noisy_text_a'] = noisy_text_stage_a
+        progress_bar_a.empty(); status_text_a.empty()
+        st.success("Method A noise application complete.")
+
+        st.markdown("---")
+        st.markdown("##### Applying Noise Method B (High-Frequency Word Removal)")
+        noisy_text_stage_b = []
+        source_texts_b = data_tsdae_local['noisy_text_a'].tolist() 
+        total_items_b = len(source_texts_b)
+        progress_bar_b = st.progress(0)
+        status_text_b = st.empty()
+        for idx, text_content in enumerate(source_texts_b):
+            noisy_text_stage_b.append(denoise_text(text_content, method='b', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold))
+            if total_items_b > 0:
+                progress_bar_b.progress((idx + 1) / total_items_b)
+                status_text_b.text(f"Method B: Processed {idx + 1}/{total_items_b} entries.")
+        data_tsdae_local['noisy_text_b'] = noisy_text_stage_b
+        progress_bar_b.empty(); status_text_b.empty()
+        st.success("Method B noise application complete.")
+
+        st.markdown("---")
+        st.markdown("##### Applying Noise Method C (High-Frequency Word Removal + Shuffle)")
+        final_noisy_texts_list = [] 
+        source_texts_c = data_tsdae_local['noisy_text_b'].tolist() 
+        total_items_c = len(source_texts_c)
+        progress_bar_c = st.progress(0)
+        status_text_c = st.empty()
+        for idx, text_content in enumerate(source_texts_c):
+            final_noisy_texts_list.append(denoise_text(text_content, method='c', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold))
+            if total_items_c > 0:
+                progress_bar_c.progress((idx + 1) / total_items_c)
+                status_text_c.text(f"Method C: Processed {idx + 1}/{total_items_c} entries.")
+        data_tsdae_local['final_noisy_text'] = final_noisy_texts_list
+        progress_bar_c.empty(); status_text_c.empty()
+        st.success("Method C noise application complete.")
+        
+        st.session_state['data'] = data_tsdae_local 
         st.dataframe(st.session_state['data'][['Job.ID','processed_text', 'noisy_text_a', 'noisy_text_b', 'final_noisy_text']].head(), height=200)
 
         final_noisy_texts_series = st.session_state['data']['final_noisy_text'].fillna('').astype(str)
@@ -480,8 +510,6 @@ def tsdae_page():
         st.write(f"Shape: {st.session_state.tsdae_embeddings.shape}")
         st.write(st.session_state.tsdae_embeddings[:3])
     return
-
-# ... (bert_model_page, clustering_page, upload_cv_page, job_recommendation_page, annotation_page, _calculate_average_precision, evaluation_page remain the same as the last complete version)
 
 def bert_model_page():
     st.header("Standard BERT Embeddings (Job Descriptions)")
@@ -525,7 +553,6 @@ def bert_model_page():
                 main_data_for_hover = st.session_state['data']
                 if 'Title' in main_data_for_hover.columns: hover_data_cols.append('Title')
                 
-                # Use 'combined_jobs' for description hover as 'text' might not be the primary source anymore
                 description_col_for_hover = 'combined_jobs' if 'combined_jobs' in main_data_for_hover.columns else 'text' 
                 if description_col_for_hover in main_data_for_hover.columns : hover_data_cols.append(description_col_for_hover)
                 
@@ -552,56 +579,124 @@ def bert_model_page():
 def clustering_page():
     st.header("Clustering Job Embeddings")
     st.write("Clusters job embeddings generated from 'processed_text'.")
-    if st.session_state.get('data') is None: st.error("Job data not loaded."); return
+    if st.session_state.get('data') is None: 
+        st.error("Job data not loaded. Please go to Home page first."); return
 
     emb_to_cluster, job_ids_clust, src_name_clust = None, None, ""
-    choice = st.radio("Embeddings for clustering:", ("TSDAE", "Standard BERT"), key="clust_emb_choice", horizontal=True)
+    choice = st.radio("Embeddings for clustering:", ("TSDAE", "Standard BERT"), key="clust_emb_choice_main", horizontal=True)
 
     if choice == "TSDAE":
         if st.session_state.get('tsdae_embeddings', np.array([])).size > 0:
             emb_to_cluster = st.session_state['tsdae_embeddings']
             job_ids_clust = st.session_state.get('tsdae_embedding_job_ids')
             src_name_clust = "TSDAE Embeddings"
-            if not job_ids_clust: st.error("TSDAE Job IDs missing."); return
-        else: st.warning("TSDAE embeddings unavailable."); return
+            if not job_ids_clust: st.error("TSDAE Job IDs missing. Please run TSDAE embedding generation."); return
+        else: st.warning("TSDAE embeddings unavailable. Please generate them on the TSDAE page."); return
     else: # Standard BERT
         if st.session_state.get('job_text_embeddings', np.array([])).size > 0:
             emb_to_cluster = st.session_state['job_text_embeddings']
             job_ids_clust = st.session_state.get('job_text_embedding_job_ids')
             src_name_clust = "Standard BERT Job Embeddings"
-            if not job_ids_clust: st.error("Std BERT Job IDs missing."); return
-        else: st.warning("Std BERT embeddings unavailable."); return
+            if not job_ids_clust: st.error("Standard BERT Job IDs missing. Please run BERT Model embedding generation."); return
+        else: st.warning("Standard BERT job embeddings unavailable. Please generate them on the BERT Model page."); return
     
-    st.info(f"Using: {src_name_clust} ({len(job_ids_clust)} items)")
+    st.info(f"Using: {src_name_clust} ({len(job_ids_clust)} items for potential clustering)")
+    
     if emb_to_cluster is not None and job_ids_clust:
         max_k_val = emb_to_cluster.shape[0]
-        if max_k_val < 2: st.error("Need >= 2 items to cluster."); return
-        k_val = st.slider("Number of Clusters (K)", 2, min(50, max_k_val), min(N_CLUSTERS, max_k_val), key="k_slider_c")
-        if st.button(f"Run K-Means (K={k_val}) on {src_name_clust}", key="run_kmeans_c_btn"):
-            labels = cluster_embeddings_with_progress(emb_to_cluster, k_val)
-            if labels is not None:
-                if len(job_ids_clust) == len(labels):
-                    info_df = pd.DataFrame({'Job.ID': job_ids_clust, 'cluster': labels})
-                    data_copy = st.session_state['data'].copy()
-                    if 'cluster' in data_copy.columns: data_copy = data_copy.drop(columns=['cluster'])
-                    st.session_state['data'] = pd.merge(data_copy, info_df, on='Job.ID', how='left')
-                    st.success(f"'cluster' column updated for {len(job_ids_clust)} jobs.")
-                else: st.error("Job ID / cluster label length mismatch.")
-            else: st.error("Clustering failed.")
+        if max_k_val < 2: st.error("Need at least 2 embedded items to cluster."); return
+        
+        num_clusters_input = st.slider("Number of Clusters (K)", 2, min(50, max_k_val), min(N_CLUSTERS, max_k_val), key="k_slider_cluster_main")
+        
+        if st.button(f"Run K-Means (K={num_clusters_input}) on {src_name_clust}", key="run_kmeans_button_main"):
+            cluster_labels = cluster_embeddings_with_progress(emb_to_cluster, num_clusters_input)
+            if cluster_labels is not None:
+                if len(job_ids_clust) == len(cluster_labels):
+                    # Create a DataFrame with Job.ID and their assigned cluster labels
+                    cluster_info_df = pd.DataFrame({'Job.ID': job_ids_clust, 'cluster_temp': cluster_labels})
+                    
+                    # Merge this cluster information back into the main data DataFrame
+                    data_df_with_clusters = st.session_state['data'].copy()
+                    if 'cluster' in data_df_with_clusters.columns: # Remove old cluster column if it exists
+                        data_df_with_clusters = data_df_with_clusters.drop(columns=['cluster'])
+                    
+                    # Perform a left merge to add/update cluster info for the embedded jobs
+                    st.session_state['data'] = pd.merge(data_df_with_clusters, cluster_info_df, on='Job.ID', how='left')
+                    # Rename 'cluster_temp' to 'cluster'
+                    if 'cluster_temp' in st.session_state['data'].columns:
+                        st.session_state['data'].rename(columns={'cluster_temp': 'cluster'}, inplace=True)
 
-    if 'cluster' in st.session_state.get('data', pd.DataFrame()).columns:
-        st.subheader(f"Current Clustering (K={st.session_state['data']['cluster'].nunique(dropna=True)})")
-        display_text_col_cluster = 'combined_jobs' if 'combined_jobs' in st.session_state['data'].columns else 'processed_text'
-        st.dataframe(st.session_state['data'][['Job.ID', 'Title', display_text_col_cluster, 'cluster']].head(10), height=300)
-        valid_cl = st.session_state['data']['cluster'].dropna().unique()
-        if valid_cl.size > 0:
-            st.subheader("Sample Job Descriptions per Cluster")
-            for c_num in sorted(valid_cl):
-                st.write(f"**Cluster {int(c_num)}:**")
-                subset = st.session_state['data'][st.session_state['data']['cluster'] == c_num]
-                if not subset.empty: st.dataframe(subset[['Job.ID', 'Title', display_text_col_cluster]].sample(min(3,len(subset)),random_state=1), height=150)
-                st.write("---")
-    else: st.info("No 'cluster' column in dataset or no clusters assigned.")
+                    st.success(f"'cluster' column updated in the main dataset for {len(job_ids_clust)} jobs.")
+                else:
+                    st.error("Mismatch between number of Job IDs and generated cluster labels. Cannot merge.")
+            else:
+                st.error("Clustering algorithm failed to return labels.")
+
+    # Visualization of clustering results
+    if 'cluster' in st.session_state.get('data', pd.DataFrame()).columns and \
+       emb_to_cluster is not None and job_ids_clust is not None and \
+       len(job_ids_clust) == emb_to_cluster.shape[0]: # Ensure embeddings and IDs match for PCA
+
+        st.subheader("2D Visualization of Clustered Embeddings (PCA)")
+        if emb_to_cluster.shape[0] >= 2: # PCA needs at least 2 samples
+            try:
+                pca_cluster = PCA(n_components=2)
+                reduced_embeddings_for_plot = pca_cluster.fit_transform(emb_to_cluster)
+                
+                # Create a DataFrame for plotting
+                plot_df_cluster = pd.DataFrame(reduced_embeddings_for_plot, columns=['PC1', 'PC2'])
+                plot_df_cluster['Job.ID'] = job_ids_clust # Add Job.IDs that correspond to these embeddings
+                
+                # Merge with main data to get Title, cluster label, and original text for hover
+                # We need to merge based on the Job.IDs that were actually clustered (job_ids_clust)
+                # and get their assigned cluster from st.session_state.data['cluster']
+                
+                # Get relevant columns from the main data, ensuring 'cluster' is up-to-date
+                data_for_plot_merge = st.session_state['data'][st.session_state['data']['Job.ID'].isin(job_ids_clust)].copy()
+                
+                # Select specific columns for merging to avoid conflicts and ensure necessary data
+                cols_for_merge = ['Job.ID', 'Title', 'cluster']
+                text_col_for_hover = 'combined_jobs' if 'combined_jobs' in data_for_plot_merge.columns else 'Job.Description'
+                if text_col_for_hover not in cols_for_merge and text_col_for_hover in data_for_plot_merge.columns:
+                    cols_for_merge.append(text_col_for_hover)
+                
+                data_for_plot_merge = data_for_plot_merge[cols_for_merge]
+                
+                plot_df_cluster = pd.merge(plot_df_cluster, data_for_plot_merge, on='Job.ID', how='left')
+                
+                # Ensure cluster column is suitable for coloring (e.g., categorical or string)
+                if 'cluster' in plot_df_cluster.columns:
+                    plot_df_cluster['cluster'] = plot_df_cluster['cluster'].astype('category') # Good for Plotly color mapping
+                    
+                    hover_data_plot = {'Job.ID': True, 'cluster': True, 'PC1': False, 'PC2': False}
+                    if text_col_for_hover in plot_df_cluster.columns:
+                         hover_data_plot[text_col_for_hover] = True
+
+
+                    if not plot_df_cluster.empty and 'Title' in plot_df_cluster.columns and 'cluster' in plot_df_cluster.columns:
+                        fig_cluster_pca = px.scatter(
+                            plot_df_cluster, 
+                            x='PC1', y='PC2', 
+                            color='cluster',  # Color by cluster
+                            hover_name='Title',
+                            hover_data=hover_data_plot,
+                            title=f'2D PCA of Clustered {src_name_clust}'
+                        )
+                        st.plotly_chart(fig_cluster_pca, use_container_width=True)
+                    else:
+                        st.warning("Could not generate cluster visualization. Required data (Title, Cluster) might be missing in the plot DataFrame.")
+                else:
+                    st.warning("Cluster information not found in the plot DataFrame. Cannot color by cluster.")
+
+            except Exception as e_pca_plot:
+                st.error(f"Error during PCA visualization of clusters: {e_pca_plot}")
+        else:
+            st.warning("Not enough data points (need at least 2 embedded items) to perform PCA for cluster visualization.")
+            
+    elif 'cluster' in st.session_state.get('data', pd.DataFrame()).columns: # If clusters exist but no new clustering run
+        st.info("Cluster information is present in the dataset. To re-visualize, please run clustering again if needed.")
+    else:
+        st.info("No cluster information available to visualize. Please run clustering first.")
     return
 
 def upload_cv_page():
@@ -618,7 +713,6 @@ def upload_cv_page():
             if not bert_model_for_cv: 
                 st.error("BERT model load failed for CVs."); return 
             with st.spinner("Processing CVs..."):
-                # ... (logika pemrosesan CV seperti sebelumnya) ...
                 for i, cv_file in enumerate(uploaded_cv_files):
                     o_txt, p_txt, cv_e = "", "", None
                     try:
@@ -685,14 +779,18 @@ def job_recommendation_page():
         st.error("Job IDs for selected embeddings are missing."); return
         
     temp_df_for_align = pd.DataFrame({'Job.ID': job_emb_ids_for_rec, 'emb_order': np.arange(len(job_emb_ids_for_rec))})
-    cols_to_select_rec = ['Job.ID', 'Title']
-    # Use 'combined_jobs' for display if available, as it's the source for 'processed_text'
-    text_col_for_rec_display = 'combined_jobs' if 'combined_jobs' in main_data.columns else 'processed_text'
-    cols_to_select_rec.append(text_col_for_rec_display)
-    if 'cluster' in main_data.columns: cols_to_select_rec.append('cluster')
     
-    main_data_details_for_rec = main_data[cols_to_select_rec].drop_duplicates(subset=['Job.ID'], keep='first')
-    jobs_for_sim_df = pd.merge(temp_df_for_align, main_data_details_for_rec, on='Job.ID', how='left').sort_values('emb_order').reset_index(drop=True)
+    # Define all columns needed from main_data for recommendations and subsequent annotation display
+    cols_to_fetch_for_rec = ['Job.ID', 'Title'] + JOB_DETAIL_FEATURES_TO_DISPLAY
+    if 'cluster' in main_data.columns: cols_to_fetch_for_rec.append('cluster')
+    if 'Job.Description' not in cols_to_fetch_for_rec and 'Job.Description' in main_data.columns: # Ensure Job.Description is there
+        cols_to_fetch_for_rec.append('Job.Description')
+    
+    cols_to_fetch_for_rec = list(set([col for col in cols_to_fetch_for_rec if col in main_data.columns]))
+    if 'Job.ID' not in cols_to_fetch_for_rec : cols_to_fetch_for_rec.insert(0,'Job.ID')
+
+    main_data_subset_for_rec = main_data[cols_to_fetch_for_rec].drop_duplicates(subset=['Job.ID'], keep='first')
+    jobs_for_sim_df = pd.merge(temp_df_for_align, main_data_subset_for_rec, on='Job.ID', how='left').sort_values('emb_order').reset_index(drop=True)
 
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
         st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
@@ -718,13 +816,13 @@ def job_recommendation_page():
                 recommended_j_df = temp_df_rec_with_sim.sort_values(by='similarity_score', ascending=False).head(20)
                 
                 if not recommended_j_df.empty:
-                    display_cols_rec = ['Job.ID', 'Title', 'similarity_score']
-                    if 'cluster' in recommended_j_df.columns: display_cols_rec.append('cluster')
-                    display_cols_rec.append(text_col_for_rec_display) # Show combined_jobs or processed_text
-                    st.dataframe(recommended_j_df[display_cols_rec], use_container_width=True)
-                    # Store with a consistent text column name for annotation page, e.g., 'description_text'
-                    recommended_j_df_for_ann = recommended_j_df.rename(columns={text_col_for_rec_display: 'description_text'})
-                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df_for_ann
+                    # For display on this page, show a concise set of columns
+                    display_cols_on_rec_page = ['Job.ID', 'Title', 'Company', 'City', 'similarity_score']
+                    display_cols_on_rec_page = [col for col in display_cols_on_rec_page if col in recommended_j_df.columns]
+                    st.dataframe(recommended_j_df[display_cols_on_rec_page], use_container_width=True)
+                    
+                    # Store the full recommended_j_df (with all details) for annotation
+                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df
                 else: 
                     st.info(f"No recommendations for {cv_file_n}.")
                 st.write("---") 
@@ -771,7 +869,6 @@ def annotation_page():
     st.subheader(f"📝 Annotate Recommendations as {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
     
     if 'collected_annotations' not in st.session_state or st.session_state.collected_annotations.empty:
-        # Initialize collected_annotations based on all_recommendations_for_annotation
         base_records_init = []
         if st.session_state.all_recommendations_for_annotation:
             for cv_fn_init, rec_df_init in st.session_state.all_recommendations_for_annotation.items():
@@ -779,11 +876,14 @@ def annotation_page():
                 for _, rec_row_init in rec_df_unique_init.iterrows():
                     record_init = {
                         'cv_filename': cv_fn_init, 'job_id': str(rec_row_init['Job.ID']),
-                        'job_title': rec_row_init['Title'], 
-                        'job_text': rec_row_init.get('description_text', rec_row_init.get('text','N/A')), # Use consistent key
+                        'job_title': rec_row_init.get('Title', 'N/A'), # Use .get for safety
                         'similarity_score': rec_row_init['similarity_score'], 
                         'cluster': rec_row_init.get('cluster', pd.NA)
                     }
+                    # Add all other detail columns from JOB_DETAIL_FEATURES_TO_DISPLAY
+                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY:
+                        record_init[detail_col] = rec_row_init.get(detail_col, '') # Add if exists, else empty string
+
                     for i_ann, slot_name_ann in enumerate(ANNOTATORS):
                         record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
                         record_init[f'annotator_{i_ann+1}_actual_name'] = ""
@@ -793,9 +893,8 @@ def annotation_page():
                     base_records_init.append(record_init)
             if base_records_init:
                 st.session_state.collected_annotations = pd.DataFrame(base_records_init)
-            else: # Handle case where all_recommendations_for_annotation might be empty after all
+            else: 
                 st.session_state.collected_annotations = pd.DataFrame() 
-
 
     relevance_options_map = {
         0: "0 (Very Irrelevant)", 1: "1 (Slightly Relevant)",
@@ -815,9 +914,20 @@ def annotation_page():
             with st.expander(f"Recommendations for CV: **{cv_filename}**", expanded=expand_cv_default):
                 for _, job_row_ann in recommendations_df_unique.iterrows(): 
                     job_id_str_ann = str(job_row_ann['Job.ID']) 
-                    st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann['Title']}")
-                    st.caption(f"Description: {job_row_ann.get('description_text', job_row_ann.get('text','N/A'))[:200]}...") 
-                    st.markdown(f"Similarity Score: {job_row_ann['similarity_score']:.4f} | Cluster: {job_row_ann.get('cluster', 'N/A')}")
+                    st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann.get('Title', 'N/A')}")
+                    
+                    # Display all requested details for the annotator
+                    for detail_key in JOB_DETAIL_FEATURES_TO_DISPLAY:
+                        if detail_key in job_row_ann and pd.notna(job_row_ann[detail_key]):
+                            detail_value = job_row_ann[detail_key]
+                            # Truncate long job descriptions for display
+                            if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 300:
+                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value[:300]}...")
+                            else:
+                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value}")
+                    
+                    st.caption(f"*Similarity Score:* {job_row_ann['similarity_score']:.4f} | *Cluster:* {job_row_ann.get('cluster', 'N/A')}")
+                    st.markdown("---") 
                     
                     relevance_key_ann = f"relevance_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}"
                     feedback_key_ann = f"feedback_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}"
@@ -913,7 +1023,7 @@ def _calculate_average_precision(ranked_relevance_binary, k_val):
 
 def evaluation_page():
     st.header("Model Evaluation")
-    st.write("Evaluates top 20 recommendations based on human annotations, aligning with CareerBERT's human-grounded evaluation.")
+    st.write("Evaluates top 20 recommendations based on human annotations.")
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
     anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
@@ -996,7 +1106,7 @@ def evaluation_page():
             else: st.warning("No CVs with annotations found to calculate metrics."); return 
 
             metric_config = {
-                'Precision@20': {'fmt': "{:.2%}", 'help': "Avg P@20: Proportion of top 20 relevant items (binary).", 'color': "off"},
+                'Precision@20': {'fmt': "{:.2%}", 'help': "Avg P@20. Proportion of top 20 relevant items (binary).", 'color': "off"},
                 'MAP@20': {'fmt': "{:.2%}", 'help': "Mean Avg. Precision@20 (binary relevance, considers order).", 'color': "off"},
                 'MRR@20': {'fmt': "{:.4f}", 'help': "Mean Reciprocal Rank@20 (rank of first relevant item, binary).", 'color': "normal"},
                 'HR@20': {'fmt': "{:.2%}", 'help': "Hit Ratio@20: Proportion of CVs with at least one relevant item in top 20.", 'color': "normal"},
@@ -1005,7 +1115,6 @@ def evaluation_page():
             }
             keys_to_display = ['Precision@20', 'MAP@20', 'MRR@20', 'HR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']
             
-            # Display in 2 rows of 3 columns
             metric_cols_r1 = st.columns(3)
             metric_cols_r2 = st.columns(3)
             
