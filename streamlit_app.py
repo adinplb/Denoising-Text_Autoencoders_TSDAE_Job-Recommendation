@@ -50,11 +50,12 @@ download_nltk_resources()
 # --- Constants ---
 DATA_URL = 'https://raw.githubusercontent.com/adinplb/largedataset-JRec/refs/heads/main/Filtered_Jobs_4000.csv'
 
-FEATURES_TO_COMBINE = [
+FEATURES_TO_COMBINE = [ # Used to create 'combined_jobs'
     'Status', 'Title', 'Position', 'Company', 
     'City', 'State.Name', 'Industry', 'Job.Description', 
     'Employment.Type', 'Education.Required'
 ]
+# UPDATED: Features to be available for display in Job Rec and Annotation pages
 JOB_DETAIL_FEATURES_TO_DISPLAY = [
     'Company', 'Status', 'City', 'Job.Description', 'Employment.Type', 
     'Position', 'Industry', 'Education.Required', 'State.Name'
@@ -75,7 +76,6 @@ if 'tsdae_embeddings' not in st.session_state:
     st.session_state['tsdae_embeddings'] = None 
 if 'tsdae_embedding_job_ids' not in st.session_state: 
     st.session_state['tsdae_embedding_job_ids'] = None
-# job_clusters_raw is removed as cluster info is directly merged into st.session_state.data
 if 'uploaded_cvs_data' not in st.session_state:
     st.session_state['uploaded_cvs_data'] = [] 
 if 'all_recommendations_for_annotation' not in st.session_state:
@@ -92,26 +92,32 @@ if 'annotators_saved_status' not in st.session_state:
 
 # --- Helper Functions ---
 @st.cache_data(show_spinner='Loading job data...')
-def load_and_combine_data_from_url(url, features_to_combine):
+def load_and_combine_data_from_url(url, features_to_combine_list, detail_features_to_ensure):
     try:
         df_full = pd.read_csv(url) 
         st.success('Successfully loaded data from URL!')
 
-        if 'Job.ID' in df_full.columns:
-            df_full['Job.ID'] = df_full['Job.ID'].astype(str)
-        else:
+        if 'Job.ID' not in df_full.columns:
             st.error("Column 'Job.ID' not found in the dataset.")
             return None
+        df_full['Job.ID'] = df_full['Job.ID'].astype(str)
 
-        existing_features_to_combine = [col for col in features_to_combine if col in df_full.columns]
-        missing_features = [col for col in features_to_combine if col not in df_full.columns]
-        if missing_features:
-            st.warning(f"The following features were not found and will be ignored in combination: {', '.join(missing_features)}")
+        # Determine which of the features_to_combine are actually in the loaded dataframe
+        existing_features_to_combine = [col for col in features_to_combine_list if col in df_full.columns]
+        missing_features_for_combine = [col for col in features_to_combine_list if col not in df_full.columns]
+        if missing_features_for_combine:
+            st.warning(f"The following features intended for combination were not found: {', '.join(missing_features_for_combine)}")
 
-        cols_to_load = list(set(['Job.ID', 'Title'] + existing_features_to_combine + JOB_DETAIL_FEATURES_TO_DISPLAY))
-        cols_to_load = [col for col in cols_to_load if col in df_full.columns]
-        df = df_full[cols_to_load].copy() 
+        # Ensure all requested detail features and combination features are loaded
+        cols_to_load_set = set(['Job.ID', 'Title']) # Start with essential columns
+        cols_to_load_set.update(existing_features_to_combine)
+        cols_to_load_set.update(detail_features_to_ensure)
+        
+        # Filter df_full to only include columns that actually exist in the CSV
+        actual_cols_to_load = [col for col in list(cols_to_load_set) if col in df_full.columns]
+        df = df_full[actual_cols_to_load].copy() 
 
+        # Create 'combined_jobs'
         for feature in existing_features_to_combine: 
             if feature in df.columns: 
                 df[feature] = df[feature].fillna('').astype(str)
@@ -120,8 +126,6 @@ def load_and_combine_data_from_url(url, features_to_combine):
         df['combined_jobs'] = df['combined_jobs'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
         st.success("Column 'combined_jobs' created successfully.")
-        if 'Title' not in df.columns and 'Title' in df_full.columns:
-             df['Title'] = df_full['Title']
         return df
     except Exception as e:
         st.error(f'Error loading or combining data: {e}')
@@ -313,7 +317,8 @@ def home_page():
     st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
 
     if st.session_state.get('data') is None:
-        st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE)
+        # Pass both lists of features to ensure all necessary columns are loaded
+        st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE, JOB_DETAIL_FEATURES_TO_DISPLAY)
     
     data_df = st.session_state.get('data')
 
@@ -339,8 +344,10 @@ def home_page():
 
         st.subheader('Search Word in Feature') 
         search_word = st.text_input("Enter word to search:", key="home_search_word_new") 
-        available_cols_search = [col for col in ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE if col in data_df.columns]
-        search_column = st.selectbox("Select feature to search in:", [''] + available_cols_search, key="home_search_column_new") 
+        # Ensure all potentially relevant columns are available for search selection
+        all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES_TO_DISPLAY
+        searchable_cols = sorted(list(set(col for col in all_available_cols_for_search if col in data_df.columns)))
+        search_column = st.selectbox("Select feature to search in:", [''] + searchable_cols, key="home_search_column_new") 
 
         if search_word and search_column:
             if search_column in data_df.columns:
@@ -612,91 +619,66 @@ def clustering_page():
             cluster_labels = cluster_embeddings_with_progress(emb_to_cluster, num_clusters_input)
             if cluster_labels is not None:
                 if len(job_ids_clust) == len(cluster_labels):
-                    # Create a DataFrame with Job.ID and their assigned cluster labels
                     cluster_info_df = pd.DataFrame({'Job.ID': job_ids_clust, 'cluster_temp': cluster_labels})
-                    
-                    # Merge this cluster information back into the main data DataFrame
                     data_df_with_clusters = st.session_state['data'].copy()
-                    if 'cluster' in data_df_with_clusters.columns: # Remove old cluster column if it exists
+                    if 'cluster' in data_df_with_clusters.columns: 
                         data_df_with_clusters = data_df_with_clusters.drop(columns=['cluster'])
-                    
-                    # Perform a left merge to add/update cluster info for the embedded jobs
                     st.session_state['data'] = pd.merge(data_df_with_clusters, cluster_info_df, on='Job.ID', how='left')
-                    # Rename 'cluster_temp' to 'cluster'
                     if 'cluster_temp' in st.session_state['data'].columns:
                         st.session_state['data'].rename(columns={'cluster_temp': 'cluster'}, inplace=True)
-
                     st.success(f"'cluster' column updated in the main dataset for {len(job_ids_clust)} jobs.")
                 else:
                     st.error("Mismatch between number of Job IDs and generated cluster labels. Cannot merge.")
             else:
                 st.error("Clustering algorithm failed to return labels.")
 
-    # Visualization of clustering results
     if 'cluster' in st.session_state.get('data', pd.DataFrame()).columns and \
        emb_to_cluster is not None and job_ids_clust is not None and \
-       len(job_ids_clust) == emb_to_cluster.shape[0]: # Ensure embeddings and IDs match for PCA
+       len(job_ids_clust) == emb_to_cluster.shape[0]: 
 
         st.subheader("2D Visualization of Clustered Embeddings (PCA)")
-        if emb_to_cluster.shape[0] >= 2: # PCA needs at least 2 samples
+        if emb_to_cluster.shape[0] >= 2: 
             try:
                 pca_cluster = PCA(n_components=2)
                 reduced_embeddings_for_plot = pca_cluster.fit_transform(emb_to_cluster)
-                
-                # Create a DataFrame for plotting
                 plot_df_cluster = pd.DataFrame(reduced_embeddings_for_plot, columns=['PC1', 'PC2'])
-                plot_df_cluster['Job.ID'] = job_ids_clust # Add Job.IDs that correspond to these embeddings
+                plot_df_cluster['Job.ID'] = job_ids_clust 
                 
-                # Merge with main data to get Title, cluster label, and original text for hover
-                # We need to merge based on the Job.IDs that were actually clustered (job_ids_clust)
-                # and get their assigned cluster from st.session_state.data['cluster']
-                
-                # Get relevant columns from the main data, ensuring 'cluster' is up-to-date
                 data_for_plot_merge = st.session_state['data'][st.session_state['data']['Job.ID'].isin(job_ids_clust)].copy()
-                
-                # Select specific columns for merging to avoid conflicts and ensure necessary data
                 cols_for_merge = ['Job.ID', 'Title', 'cluster']
                 text_col_for_hover = 'combined_jobs' if 'combined_jobs' in data_for_plot_merge.columns else 'Job.Description'
                 if text_col_for_hover not in cols_for_merge and text_col_for_hover in data_for_plot_merge.columns:
                     cols_for_merge.append(text_col_for_hover)
                 
                 data_for_plot_merge = data_for_plot_merge[cols_for_merge]
-                
                 plot_df_cluster = pd.merge(plot_df_cluster, data_for_plot_merge, on='Job.ID', how='left')
                 
-                # Ensure cluster column is suitable for coloring (e.g., categorical or string)
                 if 'cluster' in plot_df_cluster.columns:
-                    plot_df_cluster['cluster'] = plot_df_cluster['cluster'].astype('category') # Good for Plotly color mapping
-                    
+                    plot_df_cluster['cluster'] = plot_df_cluster['cluster'].astype('category') 
                     hover_data_plot = {'Job.ID': True, 'cluster': True, 'PC1': False, 'PC2': False}
                     if text_col_for_hover in plot_df_cluster.columns:
                          hover_data_plot[text_col_for_hover] = True
 
-
                     if not plot_df_cluster.empty and 'Title' in plot_df_cluster.columns and 'cluster' in plot_df_cluster.columns:
                         fig_cluster_pca = px.scatter(
-                            plot_df_cluster, 
-                            x='PC1', y='PC2', 
-                            color='cluster',  # Color by cluster
-                            hover_name='Title',
-                            hover_data=hover_data_plot,
+                            plot_df_cluster, x='PC1', y='PC2', color='cluster',
+                            hover_name='Title', hover_data=hover_data_plot,
                             title=f'2D PCA of Clustered {src_name_clust}'
                         )
                         st.plotly_chart(fig_cluster_pca, use_container_width=True)
                     else:
-                        st.warning("Could not generate cluster visualization. Required data (Title, Cluster) might be missing in the plot DataFrame.")
+                        st.warning("Could not generate cluster visualization. Required data missing.")
                 else:
-                    st.warning("Cluster information not found in the plot DataFrame. Cannot color by cluster.")
-
+                    st.warning("Cluster information not found for plot DataFrame.")
             except Exception as e_pca_plot:
                 st.error(f"Error during PCA visualization of clusters: {e_pca_plot}")
         else:
-            st.warning("Not enough data points (need at least 2 embedded items) to perform PCA for cluster visualization.")
+            st.warning("Not enough data points for PCA visualization.")
             
-    elif 'cluster' in st.session_state.get('data', pd.DataFrame()).columns: # If clusters exist but no new clustering run
-        st.info("Cluster information is present in the dataset. To re-visualize, please run clustering again if needed.")
+    elif 'cluster' in st.session_state.get('data', pd.DataFrame()).columns: 
+        st.info("Cluster information is present. To re-visualize, run clustering again.")
     else:
-        st.info("No cluster information available to visualize. Please run clustering first.")
+        st.info("No cluster information to visualize. Run clustering first.")
     return
 
 def upload_cv_page():
@@ -780,20 +762,33 @@ def job_recommendation_page():
         
     temp_df_for_align = pd.DataFrame({'Job.ID': job_emb_ids_for_rec, 'emb_order': np.arange(len(job_emb_ids_for_rec))})
     
-    # Define all columns needed from main_data for recommendations and subsequent annotation display
-    cols_to_fetch_for_rec = ['Job.ID', 'Title'] + JOB_DETAIL_FEATURES_TO_DISPLAY
+    # Ensure all JOB_DETAIL_FEATURES_TO_DISPLAY are included when fetching details
+    cols_to_fetch_for_rec = list(set(['Job.ID', 'Title'] + JOB_DETAIL_FEATURES_TO_DISPLAY))
     if 'cluster' in main_data.columns: cols_to_fetch_for_rec.append('cluster')
-    if 'Job.Description' not in cols_to_fetch_for_rec and 'Job.Description' in main_data.columns: # Ensure Job.Description is there
-        cols_to_fetch_for_rec.append('Job.Description')
-    
-    cols_to_fetch_for_rec = list(set([col for col in cols_to_fetch_for_rec if col in main_data.columns]))
-    if 'Job.ID' not in cols_to_fetch_for_rec : cols_to_fetch_for_rec.insert(0,'Job.ID')
+    # Ensure all selected columns exist in main_data
+    cols_to_fetch_for_rec = [col for col in cols_to_fetch_for_rec if col in main_data.columns]
+    if 'Job.ID' not in cols_to_fetch_for_rec: cols_to_fetch_for_rec.insert(0,'Job.ID') # Ensure Job.ID is present
 
     main_data_subset_for_rec = main_data[cols_to_fetch_for_rec].drop_duplicates(subset=['Job.ID'], keep='first')
     jobs_for_sim_df = pd.merge(temp_df_for_align, main_data_subset_for_rec, on='Job.ID', how='left').sort_values('emb_order').reset_index(drop=True)
 
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
         st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
+
+    # Add multiselect for choosing which details to display in the table
+    default_details_to_show = ['Company', 'City', 'Position']
+    # Filter default_details_to_show to only those present in jobs_for_sim_df
+    default_details_filtered = [col for col in default_details_to_show if col in jobs_for_sim_df.columns]
+    
+    # Filter JOB_DETAIL_FEATURES_TO_DISPLAY to only those present in jobs_for_sim_df for options
+    available_detail_options = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
+
+    selected_details_for_display = st.multiselect(
+        "Select additional job details to display in the table:",
+        options=available_detail_options,
+        default=default_details_filtered,
+        key="job_rec_detail_multiselect"
+    )
 
     if st.button("Generate Recommendations", key="gen_recs_b_main"):
         st.session_state['all_recommendations_for_annotation'] = {} 
@@ -816,13 +811,16 @@ def job_recommendation_page():
                 recommended_j_df = temp_df_rec_with_sim.sort_values(by='similarity_score', ascending=False).head(20)
                 
                 if not recommended_j_df.empty:
-                    # For display on this page, show a concise set of columns
-                    display_cols_on_rec_page = ['Job.ID', 'Title', 'Company', 'City', 'similarity_score']
-                    display_cols_on_rec_page = [col for col in display_cols_on_rec_page if col in recommended_j_df.columns]
+                    # Columns to always show + user selected details
+                    display_cols_on_rec_page = ['Job.ID', 'Title', 'similarity_score'] + selected_details_for_display
+                    # Ensure unique columns and that they exist
+                    display_cols_on_rec_page = sorted(list(set(col for col in display_cols_on_rec_page if col in recommended_j_df.columns)))
+                    if 'Job.ID' not in display_cols_on_rec_page: display_cols_on_rec_page.insert(0, 'Job.ID') # Ensure Job.ID is first
+                    if 'Title' not in display_cols_on_rec_page and 'Title' in recommended_j_df.columns: display_cols_on_rec_page.insert(1, 'Title')
+
+
                     st.dataframe(recommended_j_df[display_cols_on_rec_page], use_container_width=True)
-                    
-                    # Store the full recommended_j_df (with all details) for annotation
-                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df
+                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df # Store with all details
                 else: 
                     st.info(f"No recommendations for {cv_file_n}.")
                 st.write("---") 
@@ -876,13 +874,12 @@ def annotation_page():
                 for _, rec_row_init in rec_df_unique_init.iterrows():
                     record_init = {
                         'cv_filename': cv_fn_init, 'job_id': str(rec_row_init['Job.ID']),
-                        'job_title': rec_row_init.get('Title', 'N/A'), # Use .get for safety
+                        'job_title': rec_row_init.get('Title', 'N/A'), 
                         'similarity_score': rec_row_init['similarity_score'], 
                         'cluster': rec_row_init.get('cluster', pd.NA)
                     }
-                    # Add all other detail columns from JOB_DETAIL_FEATURES_TO_DISPLAY
-                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY:
-                        record_init[detail_col] = rec_row_init.get(detail_col, '') # Add if exists, else empty string
+                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY: # Add all detail columns
+                        record_init[detail_col] = rec_row_init.get(detail_col, '') 
 
                     for i_ann, slot_name_ann in enumerate(ANNOTATORS):
                         record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
@@ -908,6 +905,24 @@ def annotation_page():
         form_input_for_current_annotator = [] 
         expand_cv_default = len(st.session_state['all_recommendations_for_annotation']) == 1
 
+        # Feature selection for annotation display
+        # Get available detail columns from the first recommendation df as an example
+        available_details_for_ann = []
+        if st.session_state['all_recommendations_for_annotation']:
+            first_cv_key = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
+            first_rec_df = st.session_state['all_recommendations_for_annotation'][first_cv_key]
+            available_details_for_ann = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in first_rec_df.columns]
+        
+        default_details_for_ann = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann]
+        
+        selected_details_for_annotation = st.multiselect(
+            "Select job details to view during annotation:",
+            options=available_details_for_ann,
+            default=default_details_for_ann,
+            key=f"annotation_detail_multiselect_{current_annotator_slot}"
+        )
+
+
         for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
             recommendations_df_unique = recommendations_df_original.drop_duplicates(subset=['Job.ID'], keep='first')
             
@@ -916,13 +931,12 @@ def annotation_page():
                     job_id_str_ann = str(job_row_ann['Job.ID']) 
                     st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann.get('Title', 'N/A')}")
                     
-                    # Display all requested details for the annotator
-                    for detail_key in JOB_DETAIL_FEATURES_TO_DISPLAY:
+                    # Display selected details
+                    for detail_key in selected_details_for_annotation: # Use selected details
                         if detail_key in job_row_ann and pd.notna(job_row_ann[detail_key]):
                             detail_value = job_row_ann[detail_key]
-                            # Truncate long job descriptions for display
-                            if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 300:
-                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value[:300]}...")
+                            if detail_key == "Job.Description" and isinstance(detail_value, str) and len(detail_value) > 200:
+                                st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value[:200]}...")
                             else:
                                 st.caption(f"*{detail_key.replace('.', ' ')}:* {detail_value}")
                     
