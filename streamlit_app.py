@@ -13,7 +13,7 @@ from nltk.stem import PorterStemmer
 import nltk
 from tqdm import tqdm 
 from sentence_transformers import SentenceTransformer
-# from sentence_transformers.evaluation import RerankingEvaluator # Not used in the final eval as per last discussion
+# from sentence_transformers.evaluation import RerankingEvaluator # Not used as per previous discussion
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 import random
@@ -87,25 +87,25 @@ if 'annotators_saved_status' not in st.session_state:
 
 
 # --- Helper Functions ---
-@st.cache_data(show_spinner='Loading job data...') # English
-def load_and_combine_data_from_url(url, features_to_combine):
+@st.cache_data(show_spinner='Loading job data...')
+def load_and_combine_data_from_url(url, features_to_combine): # Changed function name from load_data_from_url
     try:
         df_full = pd.read_csv(url) 
-        st.success('Successfully loaded data from URL!') # English
+        st.success('Successfully loaded data from URL!')
 
         if 'Job.ID' in df_full.columns:
             df_full['Job.ID'] = df_full['Job.ID'].astype(str)
         else:
-            st.error("Column 'Job.ID' not found in the dataset.") # English
+            st.error("Column 'Job.ID' not found in the dataset.")
             return None
 
         existing_features_to_combine = [col for col in features_to_combine if col in df_full.columns]
         missing_features = [col for col in features_to_combine if col not in df_full.columns]
         if missing_features:
-            st.warning(f"The following features were not found in the dataset and will be ignored in the combination: {', '.join(missing_features)}") # English
+            st.warning(f"The following features were not found in the dataset and will be ignored in the combination: {', '.join(missing_features)}")
 
         cols_to_keep_initially = ['Job.ID'] + existing_features_to_combine
-        if 'Title' in df_full.columns and 'Title' not in cols_to_keep_initially:
+        if 'Title' in df_full.columns and 'Title' not in cols_to_keep_initially: # Ensure Title is kept if present
             cols_to_keep_initially.append('Title')
             
         df = df_full[list(set(cols_to_keep_initially))].copy() 
@@ -116,13 +116,14 @@ def load_and_combine_data_from_url(url, features_to_combine):
         df['combined_jobs'] = df[existing_features_to_combine].agg(' '.join, axis=1)
         df['combined_jobs'] = df['combined_jobs'].str.replace(r'\s+', ' ', regex=True).str.strip()
         
-        st.success("Column 'combined_jobs' created successfully.") # English
+        st.success("Column 'combined_jobs' created successfully.")
+        # Ensure 'Title' column exists in the final df if it was in the original full_df,
+        # as it's used in multiple places.
         if 'Title' not in df.columns and 'Title' in df_full.columns:
-            df['Title'] = df_full['Title']
-
+             df['Title'] = df_full['Title']
         return df
     except Exception as e:
-        st.error(f'Error loading or combining data: {e}') # English
+        st.error(f'Error loading or combining data: {e}')
         return None
 
 def extract_text_from_pdf(uploaded_file):
@@ -159,15 +160,47 @@ def preprocess_text(text):
     stemmed_words = [porter.stem(w) for w in filtered_words]
     return " ".join(stemmed_words)
 
+# Re-inserting the denoise_text function definition
+def denoise_text(text_to_denoise, method='a', del_ratio=0.6, word_freq_dict=None, freq_threshold=100):
+    if not isinstance(text_to_denoise, str) or not text_to_denoise.strip():
+        return "" 
+    words = word_tokenize(text_to_denoise)
+    n = len(words)
+    if n == 0:
+        return "" 
+    result_words = [] 
+    if method == 'a':
+        keep_or_not = np.random.rand(n) > del_ratio
+        if sum(keep_or_not) == 0 and n > 0 : 
+            idx_to_keep = np.random.choice(n) 
+            keep_or_not[idx_to_keep] = True
+        result_words = np.array(words)[keep_or_not].tolist() 
+    elif method in ('b', 'c'):
+        if word_freq_dict is None:
+            raise ValueError("word_freq_dict is required for method 'b' or 'c'.")
+        high_freq_indices = [i for i, w in enumerate(words) if word_freq_dict.get(w.lower(), 0) > freq_threshold]
+        num_to_remove = int(del_ratio * len(high_freq_indices))
+        to_remove_indices = set()
+        if high_freq_indices and num_to_remove > 0 and num_to_remove <= len(high_freq_indices):
+             to_remove_indices = set(random.sample(high_freq_indices, num_to_remove))
+        result_words = [w for i, w in enumerate(words) if i not in to_remove_indices]
+        if not result_words and words: 
+            result_words = [random.choice(words)]
+        if method == 'c' and result_words: 
+            random.shuffle(result_words)
+    else:
+        raise ValueError("Unknown denoising method. Use 'a', 'b', or 'c'.")
+    return TreebankWordDetokenizer().detokenize(result_words)
+
 def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_jobs'):
     processed_results_intermediate = [] 
     if text_column_to_process not in data_df.columns:
-        st.warning(f"Column '{text_column_to_process}' not found for preprocessing.") # English
+        st.warning(f"Column '{text_column_to_process}' not found for preprocessing.")
         if 'processed_text' not in data_df.columns: data_df['processed_text'] = ""
         if 'preprocessing_steps' not in data_df.columns: data_df['preprocessing_steps'] = [{} for _ in range(len(data_df))]
         return data_df 
 
-    with st.spinner(f"Preprocessing column '{text_column_to_process}'..."): # English
+    with st.spinner(f"Preprocessing column '{text_column_to_process}'..."):
         progress_bar = st.progress(0)
         status_text = st.empty()
         total_rows = len(data_df)
@@ -197,11 +230,11 @@ def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_
 
             if total_rows > 0:
                 progress_bar.progress((i + 1) / total_rows)
-                status_text.text(f"Processed {i + 1}/{total_rows} entries.") # English
+                status_text.text(f"Processed {i + 1}/{total_rows} entries.")
         
         data_df['processed_text'] = processed_texts_col 
         data_df['preprocessing_steps'] = processed_results_intermediate
-        st.success(f"Preprocessing of column '{text_column_to_process}' complete! Column 'processed_text' has been created/updated.") # English
+        st.success(f"Preprocessing of column '{text_column_to_process}' complete! Column 'processed_text' has been created/updated.")
         progress_bar.empty()
         status_text.empty()
     return data_df
@@ -276,8 +309,8 @@ def cluster_embeddings_with_progress(embeddings_to_cluster_param, n_clusters_for
 
 # --- Page Functions ---
 def home_page():
-    st.header("Home: Exploratory Data Analysis") # English
-    st.write("This page provides an overview of the job dataset and allows you to explore its features.") # English
+    st.header("Home: Exploratory Data Analysis") 
+    st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
 
     if st.session_state.get('data') is None:
         st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE)
@@ -285,34 +318,34 @@ def home_page():
     data_df = st.session_state.get('data')
 
     if data_df is not None:
-        st.subheader('Data Preview (including `combined_jobs`)') # English
+        st.subheader('Data Preview (including `combined_jobs`)') 
         cols_to_preview = ['Job.ID']
         if 'Title' in data_df.columns: cols_to_preview.append('Title')
         if 'combined_jobs' in data_df.columns: cols_to_preview.append('combined_jobs')
         
-        for col in FEATURES_TO_COMBINE:
+        for col in FEATURES_TO_COMBINE: # Add other defined features for preview if they exist
             if col in data_df.columns and col not in cols_to_preview:
                 cols_to_preview.append(col)
         
         st.dataframe(data_df[cols_to_preview].head(), use_container_width=True)
 
-        st.subheader('Data Summary') # English
-        st.write(f'Number of rows: {len(data_df)}') # English
-        st.write(f'Number of columns: {len(data_df.columns)}') # English
+        st.subheader('Data Summary') 
+        st.write(f'Number of rows: {len(data_df)}') 
+        st.write(f'Number of columns: {len(data_df.columns)}') 
         
         if 'combined_jobs' in data_df.columns:
-            st.subheader('Sample Content of `combined_jobs` Column') # English
+            st.subheader('Sample Content of `combined_jobs` Column') 
             for i in range(min(3, len(data_df))):
                 title_display = data_df.iloc[i]['Title'] if 'Title' in data_df.columns else "N/A"
                 with st.expander(f"Job.ID: {data_df.iloc[i]['Job.ID']} - {title_display}"):
                     st.text(data_df.iloc[i]['combined_jobs'])
         else:
-            st.warning("Column 'combined_jobs' has not been created or is not in the data.") # English
+            st.warning("Column 'combined_jobs' has not been created or is not in the data.") 
 
-        st.subheader('Search Word in Feature') # English
-        search_word = st.text_input("Enter word to search:", key="home_search_word_new") # English
+        st.subheader('Search Word in Feature') 
+        search_word = st.text_input("Enter word to search:", key="home_search_word_new") 
         available_cols_search = [col for col in ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE if col in data_df.columns]
-        search_column = st.selectbox("Select feature to search in:", [''] + available_cols_search, key="home_search_column_new") # English
+        search_column = st.selectbox("Select feature to search in:", [''] + available_cols_search, key="home_search_column_new") 
 
         if search_word and search_column:
             if search_column in data_df.columns:
@@ -322,128 +355,145 @@ def home_page():
                 if search_column not in display_search_cols: display_search_cols.append(search_column)
 
                 if not search_results.empty:
-                    st.write(f"Found {len(search_results)} entries for '{search_word}' in '{search_column}':") # English
+                    st.write(f"Found {len(search_results)} entries for '{search_word}' in '{search_column}':") 
                     st.dataframe(search_results[display_search_cols].head(), use_container_width=True) 
                 else:
-                    st.info(f"No entries found for '{search_word}' in '{search_column}'.") # English
+                    st.info(f"No entries found for '{search_word}' in '{search_column}'.") 
         
-        st.subheader('Feature Information') # English
-        st.write('**Available Features (after processing):**', data_df.columns.tolist()) # English
+        st.subheader('Feature Information') 
+        st.write('**Available Features (after processing):**', data_df.columns.tolist()) 
     else:
-        st.error("Data could not be loaded. Please check the data source or your connection.") # English
+        st.error("Data could not be loaded. Please check the data source or your connection.") 
     return
 
 def preprocessing_page():
-    st.header("Job Data Preprocessing") # English
-    st.write("This page performs preprocessing on the 'combined_jobs' column of the job dataset.") # English
+    st.header("Job Data Preprocessing") 
+    st.write("This page performs preprocessing on the 'combined_jobs' column of the job dataset.") 
 
     if st.session_state.get('data') is None or 'combined_jobs' not in st.session_state.get('data', pd.DataFrame()).columns:
-        st.warning("Job data or 'combined_jobs' column not available. Please return to the 'Home' page to load data first.") # English
-        if st.button("Return to Home to Load Data"): # English
-            st.info("Please select 'Home' from the sidebar navigation.") # English
+        st.warning("Job data or 'combined_jobs' column not available. Please return to the 'Home' page to load data first.") 
+        if st.button("Return to Home to Load Data"): 
+            st.info("Please select 'Home' from the sidebar navigation.") 
         return
     
     data_df_to_preprocess = st.session_state['data']
 
-    st.info("The 'combined_jobs' column will be processed to create the 'processed_text' column.") # English
+    st.info("The 'combined_jobs' column will be processed to create the 'processed_text' column.") 
     if 'combined_jobs' in data_df_to_preprocess.columns:
-        with st.expander("View 'combined_jobs' sample (before processing)"): # English
+        with st.expander("View 'combined_jobs' sample (before processing)"): 
             st.dataframe(data_df_to_preprocess[['Job.ID', 'combined_jobs']].head())
 
-    if st.button("Run Preprocessing on 'combined_jobs' Column", key="run_job_col_prep_btn"): # English
-        with st.spinner("Preprocessing 'combined_jobs'..."): # English
+    if st.button("Run Preprocessing on 'combined_jobs' Column", key="run_job_col_prep_btn"): 
+        with st.spinner("Preprocessing 'combined_jobs'..."): 
             data_copy = data_df_to_preprocess.copy()
             st.session_state['data'] = preprocess_text_with_intermediate(data_copy, text_column_to_process='combined_jobs')
-        st.success("Preprocessing of 'combined_jobs' column complete! 'processed_text' column has been created/updated.") # English
+        st.success("Preprocessing of 'combined_jobs' column complete! 'processed_text' column has been created/updated.") 
     
     if 'processed_text' in st.session_state.get('data', pd.DataFrame()).columns:
-        st.info("Preprocessing has been performed on 'combined_jobs'.") # English
+        st.info("Preprocessing has been performed on 'combined_jobs'.") 
         display_data_processed = st.session_state['data'] 
         
         if 'preprocessing_steps' in display_data_processed.columns:
-            st.subheader("Preprocessing Results (Intermediate Steps from last run)") # English
+            st.subheader("Preprocessing Results (Intermediate Steps from last run)") 
             valid_intermediate_steps = [s for s in display_data_processed['preprocessing_steps'] if isinstance(s, dict)] 
             if valid_intermediate_steps:
                 st.dataframe(pd.DataFrame(valid_intermediate_steps).head(), use_container_width=True)
             else:
-                st.warning("Intermediate preprocessing steps data is not in the expected format or is empty.") # English
+                st.warning("Intermediate preprocessing steps data is not in the expected format or is empty.") 
         
-        st.subheader("Final Preprocessed Text ('processed_text') (Preview)") # English
+        st.subheader("Final Preprocessed Text ('processed_text') (Preview)") 
         st.dataframe(display_data_processed[['Job.ID', 'combined_jobs', 'processed_text']].head(), use_container_width=True)
         
-        search_word_in_processed = st.text_input("Search word in 'processed_text':", key="prep_job_proc_search") # English
+        search_word_in_processed = st.text_input("Search word in 'processed_text':", key="prep_job_proc_search") 
         if search_word_in_processed:
             search_results_in_processed = display_data_processed[display_data_processed['processed_text'].astype(str).str.contains(search_word_in_processed, na=False, case=False)] 
             if not search_results_in_processed.empty:
-                st.dataframe(search_results_in_processed[['Job.ID', 'Title' if 'Title' in display_data_processed else 'Job.ID', 'processed_text']].head(), use_container_width=True)
+                display_cols_search_proc = ['Job.ID']
+                if 'Title' in display_data_processed.columns: display_cols_search_proc.append('Title')
+                display_cols_search_proc.append('processed_text')
+                st.dataframe(search_results_in_processed[display_cols_search_proc].head(), use_container_width=True)
             else:
-                st.info(f"No results for '{search_word_in_processed}' in 'processed_text'.") # English
+                st.info(f"No results for '{search_word_in_processed}' in 'processed_text'.") 
     else:
-        st.info("Column 'combined_jobs' is available, but preprocessing has not been run yet. Click the button above.") # English
+        st.info("Column 'combined_jobs' is available, but preprocessing has not been run yet. Click the button above.") 
     return
 
 def tsdae_page():
     st.header("TSDAE (Noise Injection & Embedding for Job Text)")
-    st.write("Applies sequential noise and generates TSDAE embeddings for preprocessed job text ('processed_text').") # English
+    st.write("Applies sequential noise and generates TSDAE embeddings for 'processed_text' (derived from 'combined_jobs').") 
     if st.session_state.get('data') is None or 'processed_text' not in st.session_state.get('data', pd.DataFrame()).columns:
-        st.warning("Job data must be loaded & preprocessed (from 'combined_jobs') first. Visit 'Preprocessing' page.") # English
+        st.warning("Job data must be loaded & preprocessed (from 'combined_jobs') first. Visit 'Preprocessing' page.") 
         return
-    bert_model = load_bert_model()
-    if bert_model is None: return
+    # ... (rest of TSDAE logic using st.session_state.data['processed_text']) ...
+    bert_model = load_bert_model() # Moved here to ensure it's loaded before use
+    if bert_model is None: 
+        st.error("BERT model could not be loaded for TSDAE page."); return
 
     st.subheader("TSDAE Settings")
-    del_ratio = st.slider("Deletion Ratio", 0.1, 0.9, 0.6, 0.1, key="tsdae_del_r")
-    freq_thresh = st.slider("High Freq Threshold", 10, 500, 100, 10, key="tsdae_freq_t")
+    deletion_ratio = st.slider("Deletion Ratio", 0.1, 0.9, 0.6, 0.1, key="tsdae_del_ratio_main")
+    freq_threshold = st.slider("High Frequency Threshold", 10, 500, 100, 10, key="tsdae_freq_thresh_main")
 
-    if st.button("Apply Noise & Generate TSDAE Embeddings", key="tsdae_run_all_btn"):
-        data_tsdae = st.session_state['data'].copy()
-        # Ensure 'processed_text' is used for generating word frequencies
-        if 'processed_text' not in data_tsdae.columns or data_tsdae['processed_text'].isnull().all():
+    if st.button("Apply Noise & Generate TSDAE Embeddings", key="tsdae_run_button_main"):
+        data_tsdae_local = st.session_state['data'].copy()
+        if 'processed_text' not in data_tsdae_local.columns or data_tsdae_local['processed_text'].isnull().all():
             st.error("Column 'processed_text' is empty or missing. Cannot proceed with TSDAE.")
             return
 
-        words_for_freq = [w for txt in data_tsdae['processed_text'].fillna('').astype(str) for w in word_tokenize(txt)]
-        word_freq = {w.lower(): words_for_freq.count(w.lower()) for w in set(words_for_freq)}
-        if not word_freq: st.warning("Word frequency dictionary for TSDAE is empty.")
+        all_words = [w for txt_proc in data_tsdae_local['processed_text'].fillna('').astype(str) for w in word_tokenize(txt_proc)]
+        word_freq_dict_tsdae = {word.lower(): all_words.count(word.lower()) for word in set(all_words)}
+        if not word_freq_dict_tsdae: st.warning("Word frequency dictionary for TSDAE is empty (all processed texts might be empty).")
 
-        with st.spinner("Applying Noise A..."): data_tsdae['noisy_text_a'] = data_tsdae['processed_text'].fillna('').astype(str).apply(lambda x: denoise_text(x, 'a', del_ratio))
-        with st.spinner("Applying Noise B..."): data_tsdae['noisy_text_b'] = data_tsdae['noisy_text_a'].astype(str).apply(lambda x: denoise_text(x, 'b', del_ratio, word_freq, freq_thresh))
-        with st.spinner("Applying Noise C..."): data_tsdae['final_noisy_text'] = data_tsdae['noisy_text_b'].astype(str).apply(lambda x: denoise_text(x, 'c', del_ratio, word_freq, freq_thresh))
-        st.session_state['data'] = data_tsdae
+        with st.spinner("Applying Noise Method A..."):
+            data_tsdae_local['noisy_text_a'] = data_tsdae_local['processed_text'].fillna('').astype(str).apply(
+                lambda x: denoise_text(x, method='a', del_ratio=deletion_ratio)
+            )
+        with st.spinner("Applying Noise Method B..."):
+            data_tsdae_local['noisy_text_b'] = data_tsdae_local['noisy_text_a'].astype(str).apply(
+                lambda x: denoise_text(x, method='b', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold)
+            )
+        with st.spinner("Applying Noise Method C..."):
+            data_tsdae_local['final_noisy_text'] = data_tsdae_local['noisy_text_b'].astype(str).apply(
+                lambda x: denoise_text(x, method='c', del_ratio=deletion_ratio, word_freq_dict=word_freq_dict_tsdae, freq_threshold=freq_threshold)
+            )
+        st.session_state['data'] = data_tsdae_local # Update session state
         st.success("Noise application complete.")
-        st.dataframe(data_tsdae[['Job.ID','processed_text', 'noisy_text_a', 'noisy_text_b', 'final_noisy_text']].head(), height=200)
-
-        noisy_series = data_tsdae['final_noisy_text'].fillna('').astype(str)
-        mask = noisy_series.str.strip() != ''
-        valid_noisy_texts = noisy_series[mask].tolist()
-        valid_noisy_job_ids = data_tsdae.loc[mask, 'Job.ID'].tolist()
-        if not valid_noisy_texts: st.warning("No valid noisy texts for TSDAE embedding.")
-        else:
-            st.session_state['tsdae_embeddings'] = generate_embeddings_with_progress(bert_model, valid_noisy_texts)
-            st.session_state['tsdae_embedding_job_ids'] = valid_noisy_job_ids
-            if st.session_state.get('tsdae_embeddings', np.array([])).size > 0: st.success(f"TSDAE embeddings generated for {len(valid_noisy_job_ids)} jobs!")
-            else: st.warning("TSDAE embedding output empty.")
-    
-    if st.session_state.get('tsdae_embeddings') is not None:
-        st.subheader("Current TSDAE Embeddings")
-        st.write(f"Shape: {st.session_state['tsdae_embeddings'].shape} (for {len(st.session_state.get('tsdae_embedding_job_ids',[]))} jobs)")
-    if 'final_noisy_text' in st.session_state.get('data', pd.DataFrame()).columns:
-        st.subheader("Current Noisy Text Columns (Preview)")
         st.dataframe(st.session_state['data'][['Job.ID','processed_text', 'noisy_text_a', 'noisy_text_b', 'final_noisy_text']].head(), height=200)
+
+        final_noisy_texts_series = st.session_state['data']['final_noisy_text'].fillna('').astype(str)
+        non_empty_mask = final_noisy_texts_series.str.strip() != ''
+        valid_final_noisy_texts = final_noisy_texts_series[non_empty_mask].tolist()
+        job_ids_for_tsdae_embeddings = st.session_state['data'].loc[non_empty_mask, 'Job.ID'].tolist()
+
+        if not valid_final_noisy_texts:
+            st.warning("No valid (non-empty) 'final_noisy_text' found to generate TSDAE embeddings.")
+        else:
+            tsdae_embeddings_generated = generate_embeddings_with_progress(bert_model, valid_final_noisy_texts)
+            if tsdae_embeddings_generated.size > 0:
+                st.session_state['tsdae_embeddings'] = tsdae_embeddings_generated
+                st.session_state['tsdae_embedding_job_ids'] = job_ids_for_tsdae_embeddings
+                st.success(f"TSDAE embeddings generated for {len(job_ids_for_tsdae_embeddings)} jobs!")
+            else:
+                st.warning("TSDAE embedding generation resulted in an empty output.")
+    
+    if 'tsdae_embeddings' in st.session_state and st.session_state.tsdae_embeddings is not None:
+        st.subheader("Current TSDAE Embeddings (Preview)")
+        st.write(f"Shape: {st.session_state.tsdae_embeddings.shape}")
+        st.write(st.session_state.tsdae_embeddings[:3])
     return
+
+# ... (bert_model_page, clustering_page, upload_cv_page, job_recommendation_page, annotation_page, _calculate_average_precision, evaluation_page remain the same as the last complete version)
 
 def bert_model_page():
     st.header("Standard BERT Embeddings (Job Descriptions)")
-    st.write("Generates standard BERT embeddings from 'processed_text' (derived from 'combined_jobs').") # English
+    st.write("Generates standard BERT embeddings from 'processed_text' (derived from 'combined_jobs').") 
     if st.session_state.get('data') is None or 'processed_text' not in st.session_state.get('data', pd.DataFrame()).columns:
-        st.warning("Job data must be loaded & preprocessed. Visit 'Preprocessing' page.") # English
+        st.warning("Job data must be loaded & preprocessed. Visit 'Preprocessing' page.") 
         return
     bert_model = load_bert_model()
     if bert_model is None: return
 
     if st.button("Generate/Regenerate Standard Job Embeddings", key="gen_std_emb_btn"):
         data_bert = st.session_state['data']
-        # Ensure 'processed_text' is used
         if 'processed_text' not in data_bert.columns or data_bert['processed_text'].isnull().all():
             st.error("Column 'processed_text' is empty or missing. Please run preprocessing first.")
             return
@@ -456,8 +506,8 @@ def bert_model_page():
         else:
             st.session_state['job_text_embeddings'] = generate_embeddings_with_progress(bert_model, valid_texts)
             st.session_state['job_text_embedding_job_ids'] = valid_job_ids
-            if st.session_state.get('job_text_embeddings', np.array([])).size > 0: st.success(f"Standard job embeddings generated for {len(valid_job_ids)} jobs!")
-            else: st.warning("Standard job embedding output empty.")
+            if st.session_state.get('job_text_embeddings', np.array([])).size > 0: st.success(f"Std job embeddings generated for {len(valid_job_ids)} jobs!")
+            else: st.warning("Std job embedding output empty.")
 
     job_emb = st.session_state.get('job_text_embeddings')
     job_ids = st.session_state.get('job_text_embedding_job_ids')
@@ -470,21 +520,27 @@ def bert_model_page():
                 pca_2d = PCA(n_components=2).fit_transform(job_emb)
                 plot_pca_df = pd.DataFrame(pca_2d, columns=['PC1','PC2'])
                 plot_pca_df['Job.ID'] = job_ids
-                # Ensure 'text' (original description) and 'Title' are present for hover data
-                hover_data_cols = ['Job.ID']
-                if 'Title' in st.session_state['data'].columns: hover_data_cols.append('Title')
-                if 'text' in st.session_state['data'].columns: hover_data_cols.append('text') # original 'text' if available
-                elif 'Job.Description' in st.session_state['data'].columns: hover_data_cols.append('Job.Description') # fallback
                 
-                hover_df = st.session_state['data'][st.session_state['data']['Job.ID'].isin(job_ids)][hover_data_cols]
+                hover_data_cols = ['Job.ID']
+                main_data_for_hover = st.session_state['data']
+                if 'Title' in main_data_for_hover.columns: hover_data_cols.append('Title')
+                
+                # Use 'combined_jobs' for description hover as 'text' might not be the primary source anymore
+                description_col_for_hover = 'combined_jobs' if 'combined_jobs' in main_data_for_hover.columns else 'text' 
+                if description_col_for_hover in main_data_for_hover.columns : hover_data_cols.append(description_col_for_hover)
+                
+                hover_df = main_data_for_hover[main_data_for_hover['Job.ID'].isin(job_ids)][hover_data_cols]
                 plot_pca_df = pd.merge(plot_pca_df, hover_df, on='Job.ID', how='left')
                 
-                hover_text_col = 'text' if 'text' in plot_pca_df.columns else 'Job.Description' if 'Job.Description' in plot_pca_df.columns else None
+                hover_data_config = {'Job.ID':True, 'PC1':False, 'PC2':False}
+                if description_col_for_hover in plot_pca_df.columns:
+                    hover_data_config[description_col_for_hover] = True
+
 
                 if not plot_pca_df.empty and 'Title' in plot_pca_df.columns:
                     fig_pca = px.scatter(plot_pca_df, 'PC1','PC2', 
                                          hover_name='Title', 
-                                         hover_data={hover_text_col: True, 'Job.ID': True, 'PC1':False, 'PC2':False} if hover_text_col else {'Job.ID': True, 'PC1':False, 'PC2':False},
+                                         hover_data=hover_data_config,
                                          title='2D PCA of Standard Job Embeddings')
                     st.plotly_chart(fig_pca, use_container_width=True)
                 else: st.warning("PCA plot data incomplete (Title or hover text missing).")
@@ -495,7 +551,7 @@ def bert_model_page():
 
 def clustering_page():
     st.header("Clustering Job Embeddings")
-    st.write("Clusters job embeddings generated from 'processed_text'.") # English
+    st.write("Clusters job embeddings generated from 'processed_text'.")
     if st.session_state.get('data') is None: st.error("Job data not loaded."); return
 
     emb_to_cluster, job_ids_clust, src_name_clust = None, None, ""
@@ -535,34 +591,34 @@ def clustering_page():
 
     if 'cluster' in st.session_state.get('data', pd.DataFrame()).columns:
         st.subheader(f"Current Clustering (K={st.session_state['data']['cluster'].nunique(dropna=True)})")
-        # Use 'combined_jobs' or 'processed_text' for display if 'text' is no longer primary
-        display_text_col = 'combined_jobs' if 'combined_jobs' in st.session_state['data'].columns else 'processed_text'
-        st.dataframe(st.session_state['data'][['Job.ID', 'Title', display_text_col, 'cluster']].head(10), height=300)
+        display_text_col_cluster = 'combined_jobs' if 'combined_jobs' in st.session_state['data'].columns else 'processed_text'
+        st.dataframe(st.session_state['data'][['Job.ID', 'Title', display_text_col_cluster, 'cluster']].head(10), height=300)
         valid_cl = st.session_state['data']['cluster'].dropna().unique()
         if valid_cl.size > 0:
             st.subheader("Sample Job Descriptions per Cluster")
             for c_num in sorted(valid_cl):
                 st.write(f"**Cluster {int(c_num)}:**")
                 subset = st.session_state['data'][st.session_state['data']['cluster'] == c_num]
-                if not subset.empty: st.dataframe(subset[['Job.ID', 'Title', display_text_col]].sample(min(3,len(subset)),random_state=1), height=150)
+                if not subset.empty: st.dataframe(subset[['Job.ID', 'Title', display_text_col_cluster]].sample(min(3,len(subset)),random_state=1), height=150)
                 st.write("---")
     else: st.info("No 'cluster' column in dataset or no clusters assigned.")
     return
 
 def upload_cv_page():
     st.header("Upload & Process CV(s)")
-    st.write("Upload CVs (PDF/DOCX, max 5).") # English
-    uploaded_cv_files = st.file_uploader("Choose CV files:", type=["pdf","docx"], accept_multiple_files=True, key="cv_upload_widget_main") # English
+    st.write("Upload CVs (PDF/DOCX, max 5).")
+    uploaded_cv_files = st.file_uploader("Choose CV files:", type=["pdf","docx"], accept_multiple_files=True, key="cv_upload_widget_main")
     if uploaded_cv_files:
         if len(uploaded_cv_files) > 5:
-            st.warning("Max 5 CVs. Processing first 5.") # English
+            st.warning("Max 5 CVs. Processing first 5.")
             uploaded_cv_files = uploaded_cv_files[:5]
-        if st.button("Process Uploaded CVs", key="proc_cv_btn_main"): # English
+        if st.button("Process Uploaded CVs", key="proc_cv_btn_main"):
             cv_data_batch = []
             bert_model_for_cv = load_bert_model()
             if not bert_model_for_cv: 
                 st.error("BERT model load failed for CVs."); return 
-            with st.spinner("Processing CVs..."): # English
+            with st.spinner("Processing CVs..."):
+                # ... (logika pemrosesan CV seperti sebelumnya) ...
                 for i, cv_file in enumerate(uploaded_cv_files):
                     o_txt, p_txt, cv_e = "", "", None
                     try:
@@ -576,44 +632,274 @@ def upload_cv_page():
                                 cv_e = e_arr[0] if (e_arr is not None and e_arr.size > 0) else None
                         cv_data_batch.append({'filename':cv_file.name, 'original_text':o_txt or "", 
                                               'processed_text':p_txt or "", 'embedding':cv_e})
-                        if cv_e is not None: st.success(f"Processed & embedded: {cv_file.name}") # English
-                        else: st.warning(f"Failed to process/embed: {cv_file.name}") # English
+                        if cv_e is not None: st.success(f"Processed & embedded: {cv_file.name}")
+                        else: st.warning(f"Failed to process/embed: {cv_file.name}")
                     except Exception as e:
-                        st.error(f"Error with {cv_file.name}: {e}") # English
+                        st.error(f"Error with {cv_file.name}: {e}")
                 st.session_state['uploaded_cvs_data'] = cv_data_batch
-                st.success(f"CV batch processing done.") # English
+                st.success(f"CV batch processing done.")
 
     if st.session_state.get('uploaded_cvs_data'):
-        st.subheader("Stored CVs:") # English
+        st.subheader("Stored CVs:")
         for i, cv_d in enumerate(st.session_state['uploaded_cvs_data']):
             with st.expander(f"CV {i+1}: {cv_d.get('filename', 'N/A')}"):
                 st.text_area(f"Original:", cv_d.get('original_text',''), height=70, disabled=True, key=f"disp_cv_o_{i}")
                 st.text_area(f"Processed:", cv_d.get('processed_text',''), height=70, disabled=True, key=f"disp_cv_p_{i}")
-                st.success("Embedding OK.") if cv_d.get('embedding') is not None and cv_d.get('embedding').size > 0 else st.warning("Embedding missing.") # English
+                st.success("Embedding OK.") if cv_d.get('embedding') is not None and cv_d.get('embedding').size > 0 else st.warning("Embedding missing.")
     return
 
 
 def job_recommendation_page():
     st.header("Job Recommendation")
-    st.write("Generates job recommendations based on CVs and job embeddings (from 'processed_text').") # English
+    st.write("Generates job recommendations for uploaded CVs based on 'processed_text' of jobs.") 
     if not st.session_state.get('uploaded_cvs_data'): 
         st.warning("Upload & process CVs first."); return
     main_data = st.session_state.get('data')
-    # Ensure 'processed_text' (derived from 'combined_jobs') is used for job embeddings
     if main_data is None or 'processed_text' not in main_data.columns:
         st.error("Job data with 'processed_text' (from 'combined_jobs') not available. Load & preprocess first."); return
     
-    # ... (rest of job_recommendation_page logic, ensure it uses job embeddings from 'processed_text') ...
-    st.info("Job Recommendation page implementation using 'processed_text' for jobs.") # English
-    return
+    job_emb_for_rec, emb_src_msg_rec, job_emb_ids_for_rec = None, "", None 
+    rec_choice = st.radio("Job Embeddings for Recs:", ("Standard BERT", "TSDAE"), key="rec_emb_c", horizontal=True)
 
+    if rec_choice == "TSDAE":
+        if st.session_state.get('tsdae_embeddings', np.array([])).size > 0:
+            job_emb_for_rec = st.session_state['tsdae_embeddings']
+            job_emb_ids_for_rec = st.session_state.get('tsdae_embedding_job_ids')
+            if not job_emb_ids_for_rec or len(job_emb_ids_for_rec) != job_emb_for_rec.shape[0]: 
+                st.error("TSDAE embeddings/Job ID list mismatch or missing."); return
+            emb_src_msg_rec = "Using TSDAE embeddings."
+        else: 
+            st.warning("TSDAE embeddings unavailable."); return
+    else: 
+        if st.session_state.get('job_text_embeddings', np.array([])).size > 0:
+            job_emb_for_rec = st.session_state['job_text_embeddings']
+            job_emb_ids_for_rec = st.session_state.get('job_text_embedding_job_ids')
+            if not job_emb_ids_for_rec or len(job_emb_ids_for_rec) != job_emb_for_rec.shape[0]: 
+                st.error("Standard BERT embeddings/Job ID list mismatch."); return
+            emb_src_msg_rec = "Using Standard BERT job embeddings."
+        else: 
+            st.warning("Standard BERT job embeddings unavailable."); return
+    st.info(emb_src_msg_rec)
+
+    if not job_emb_ids_for_rec:
+        st.error("Job IDs for selected embeddings are missing."); return
+        
+    temp_df_for_align = pd.DataFrame({'Job.ID': job_emb_ids_for_rec, 'emb_order': np.arange(len(job_emb_ids_for_rec))})
+    cols_to_select_rec = ['Job.ID', 'Title']
+    # Use 'combined_jobs' for display if available, as it's the source for 'processed_text'
+    text_col_for_rec_display = 'combined_jobs' if 'combined_jobs' in main_data.columns else 'processed_text'
+    cols_to_select_rec.append(text_col_for_rec_display)
+    if 'cluster' in main_data.columns: cols_to_select_rec.append('cluster')
+    
+    main_data_details_for_rec = main_data[cols_to_select_rec].drop_duplicates(subset=['Job.ID'], keep='first')
+    jobs_for_sim_df = pd.merge(temp_df_for_align, main_data_details_for_rec, on='Job.ID', how='left').sort_values('emb_order').reset_index(drop=True)
+
+    if len(jobs_for_sim_df) != len(job_emb_for_rec):
+        st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
+
+    if st.button("Generate Recommendations", key="gen_recs_b_main"):
+        st.session_state['all_recommendations_for_annotation'] = {} 
+        with st.spinner("Generating recommendations..."):
+            valid_cvs_rec = [cv for cv in st.session_state.get('uploaded_cvs_data', []) if cv.get('embedding') is not None and cv.get('embedding').size > 0]
+            if not valid_cvs_rec: st.warning("No CVs with valid embeddings found."); return
+
+            for cv_data_rec in valid_cvs_rec:
+                cv_file_n = cv_data_rec.get('filename', 'Unknown CV')
+                cv_embed = cv_data_rec['embedding']
+                st.subheader(f"Recommendations for {cv_file_n}")
+                cv_embed_2d = cv_embed.reshape(1, -1) if cv_embed.ndim == 1 else cv_embed
+                
+                if job_emb_for_rec.ndim == 1 or job_emb_for_rec.shape[0] == 0: 
+                    st.error(f"Selected job embeddings invalid for {cv_file_n}."); continue 
+                
+                similarities_rec = cosine_similarity(cv_embed_2d, job_emb_for_rec)[0]
+                temp_df_rec_with_sim = jobs_for_sim_df.copy() 
+                temp_df_rec_with_sim['similarity_score'] = similarities_rec
+                recommended_j_df = temp_df_rec_with_sim.sort_values(by='similarity_score', ascending=False).head(20)
+                
+                if not recommended_j_df.empty:
+                    display_cols_rec = ['Job.ID', 'Title', 'similarity_score']
+                    if 'cluster' in recommended_j_df.columns: display_cols_rec.append('cluster')
+                    display_cols_rec.append(text_col_for_rec_display) # Show combined_jobs or processed_text
+                    st.dataframe(recommended_j_df[display_cols_rec], use_container_width=True)
+                    # Store with a consistent text column name for annotation page, e.g., 'description_text'
+                    recommended_j_df_for_ann = recommended_j_df.rename(columns={text_col_for_rec_display: 'description_text'})
+                    st.session_state['all_recommendations_for_annotation'][cv_file_n] = recommended_j_df_for_ann
+                else: 
+                    st.info(f"No recommendations for {cv_file_n}.")
+                st.write("---") 
+        st.success("Recommendation generation complete!")
+    return
 
 def annotation_page():
     st.header("Annotation of Job Recommendations")
-    st.write("Annotate relevance and provide feedback for recommended jobs.") # English
-    # ... (Annotation logic as previously defined) ...
-    st.info("Annotation page implementation.") # English
+    st.write("Annotate relevance and provide feedback for recommended jobs.")
+
+    if not st.session_state.get('all_recommendations_for_annotation'):
+        st.warning("Generate recommendations first on the 'Job Recommendation' page."); return
+    
+    if 'annotator_details' not in st.session_state: 
+        st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
+    if 'current_annotator_slot_for_input' not in st.session_state:
+         st.session_state.current_annotator_slot_for_input = ANNOTATORS[0] if ANNOTATORS else None
+    if 'annotators_saved_status' not in st.session_state:
+        st.session_state.annotators_saved_status = set()
+
+    st.subheader("🧑‍💻 Annotator Profile & Selection")
+    if ANNOTATORS:
+        selected_slot = st.selectbox(
+            "Select Your Annotator Slot to Enter/Edit Details and Annotations:",
+            options=ANNOTATORS,
+            index=ANNOTATORS.index(st.session_state.current_annotator_slot_for_input) if st.session_state.current_annotator_slot_for_input in ANNOTATORS else 0,
+            key="annotator_slot_selector_main"
+        )
+        st.session_state.current_annotator_slot_for_input = selected_slot
+
+        if selected_slot:
+            with st.expander(f"Edit Profile for {selected_slot}", expanded=True):
+                name_val = st.session_state.annotator_details.get(selected_slot, {}).get('actual_name', '')
+                bg_val = st.session_state.annotator_details.get(selected_slot, {}).get('profile_background', '')
+                actual_name = st.text_input(f"Your Name", value=name_val, key=f"actual_name_input_{selected_slot}_main")
+                profile_bg = st.text_area(f"Your Profile Background", value=bg_val, key=f"profile_bg_input_{selected_slot}_main", height=100 )
+                st.session_state.annotator_details[selected_slot]['actual_name'] = actual_name
+                st.session_state.annotator_details[selected_slot]['profile_background'] = profile_bg
+    else:
+        st.warning("No annotator slots defined."); return
+    
+    st.markdown("---")
+    current_annotator_display_name = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
+    st.subheader(f"📝 Annotate Recommendations as {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
+    
+    if 'collected_annotations' not in st.session_state or st.session_state.collected_annotations.empty:
+        # Initialize collected_annotations based on all_recommendations_for_annotation
+        base_records_init = []
+        if st.session_state.all_recommendations_for_annotation:
+            for cv_fn_init, rec_df_init in st.session_state.all_recommendations_for_annotation.items():
+                rec_df_unique_init = rec_df_init.drop_duplicates(subset=['Job.ID'], keep='first')
+                for _, rec_row_init in rec_df_unique_init.iterrows():
+                    record_init = {
+                        'cv_filename': cv_fn_init, 'job_id': str(rec_row_init['Job.ID']),
+                        'job_title': rec_row_init['Title'], 
+                        'job_text': rec_row_init.get('description_text', rec_row_init.get('text','N/A')), # Use consistent key
+                        'similarity_score': rec_row_init['similarity_score'], 
+                        'cluster': rec_row_init.get('cluster', pd.NA)
+                    }
+                    for i_ann, slot_name_ann in enumerate(ANNOTATORS):
+                        record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
+                        record_init[f'annotator_{i_ann+1}_actual_name'] = ""
+                        record_init[f'annotator_{i_ann+1}_profile_background'] = ""
+                        record_init[f'annotator_{i_ann+1}_relevance'] = pd.NA 
+                        record_init[f'annotator_{i_ann+1}_feedback'] = ""
+                    base_records_init.append(record_init)
+            if base_records_init:
+                st.session_state.collected_annotations = pd.DataFrame(base_records_init)
+            else: # Handle case where all_recommendations_for_annotation might be empty after all
+                st.session_state.collected_annotations = pd.DataFrame() 
+
+
+    relevance_options_map = {
+        0: "0 (Very Irrelevant)", 1: "1 (Slightly Relevant)",
+        2: "2 (Relevant)",       3: "3 (Most Relevant)"
+    }
+    
+    current_annotator_slot = st.session_state.current_annotator_slot_for_input
+    annotator_idx_for_cols = ANNOTATORS.index(current_annotator_slot) 
+
+    with st.form(key=f"annotation_form_{current_annotator_slot}_main"):
+        form_input_for_current_annotator = [] 
+        expand_cv_default = len(st.session_state['all_recommendations_for_annotation']) == 1
+
+        for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
+            recommendations_df_unique = recommendations_df_original.drop_duplicates(subset=['Job.ID'], keep='first')
+            
+            with st.expander(f"Recommendations for CV: **{cv_filename}**", expanded=expand_cv_default):
+                for _, job_row_ann in recommendations_df_unique.iterrows(): 
+                    job_id_str_ann = str(job_row_ann['Job.ID']) 
+                    st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann['Title']}")
+                    st.caption(f"Description: {job_row_ann.get('description_text', job_row_ann.get('text','N/A'))[:200]}...") 
+                    st.markdown(f"Similarity Score: {job_row_ann['similarity_score']:.4f} | Cluster: {job_row_ann.get('cluster', 'N/A')}")
+                    
+                    relevance_key_ann = f"relevance_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}"
+                    feedback_key_ann = f"feedback_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}"
+                    
+                    default_relevance = 0; default_feedback = ""
+                    if not st.session_state.collected_annotations.empty:
+                        mask = (st.session_state.collected_annotations['cv_filename'] == cv_filename) & \
+                               (st.session_state.collected_annotations['job_id'] == job_id_str_ann)
+                        existing_row = st.session_state.collected_annotations[mask]
+                        if not existing_row.empty:
+                            rel_col = f'annotator_{annotator_idx_for_cols+1}_relevance'
+                            fb_col = f'annotator_{annotator_idx_for_cols+1}_feedback'
+                            if rel_col in existing_row.columns:
+                                val = existing_row.iloc[0].get(rel_col)
+                                if pd.notna(val): default_relevance = int(val)
+                            if fb_col in existing_row.columns:
+                                default_feedback = str(existing_row.iloc[0].get(fb_col, ""))
+                    
+                    relevance_val_selected = st.radio("Relevance:", options=list(relevance_options_map.keys()), 
+                                               index=default_relevance if default_relevance in relevance_options_map else 0, 
+                                               key=relevance_key_ann, horizontal=True, format_func=lambda x: relevance_options_map[x])
+                    feedback_val_input = st.text_area("Feedback:", value=default_feedback, key=feedback_key_ann, height=75)
+                    
+                    form_input_for_current_annotator.append({
+                        'cv_filename': cv_filename, 'job_id': job_id_str_ann,
+                        'relevance': relevance_val_selected, 'feedback': feedback_val_input
+                    })
+                    st.markdown("---")
+        
+        submitted_current_annotator = st.form_submit_button(f"Save/Update My Ratings ({current_annotator_display_name})")
+
+    if submitted_current_annotator:
+        profile_details_current = st.session_state.annotator_details.get(current_annotator_slot, {})
+        actual_name_current = profile_details_current.get('actual_name', current_annotator_slot)
+        profile_bg_current = profile_details_current.get('profile_background', '')
+        updated_items_count = 0
+
+        for item_ann in form_input_for_current_annotator:
+            mask_update = (st.session_state.collected_annotations['cv_filename'] == item_ann['cv_filename']) & \
+                          (st.session_state.collected_annotations['job_id'] == item_ann['job_id'])
+            row_indices_to_update = st.session_state.collected_annotations[mask_update].index
+            
+            if not row_indices_to_update.empty:
+                idx = row_indices_to_update[0]
+                st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_slot'] = current_annotator_slot
+                st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_actual_name'] = actual_name_current
+                st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_profile_background'] = profile_bg_current
+                st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_relevance'] = item_ann['relevance']
+                st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_feedback'] = item_ann['feedback']
+                updated_items_count +=1
+            else:
+                st.warning(f"Base record for CV {item_ann['cv_filename']}, Job {item_ann['job_id']} not found. Annotation not saved.")
+        
+        st.success(f"Annotations by {current_annotator_display_name} saved/updated for {updated_items_count} items.")
+        st.session_state.annotators_saved_status.add(current_annotator_slot)
+
+    st.markdown("---")
+    st.subheader("Final Actions")
+    completed_count = len(st.session_state.get('annotators_saved_status', set()))
+    total_ann = len(ANNOTATORS) if ANNOTATORS else 0
+
+    if total_ann > 0 and completed_count == total_ann:
+        st.success(f"All {total_ann} annotator slots have saved their ratings! You can now download the combined data.")
+        download_disabled_status = False
+    else:
+        st.info(f"Waiting for all annotator slots to save ratings. Completed: {completed_count}/{total_ann}.")
+        st.write("Completed slots:", ", ".join(sorted(list(st.session_state.annotators_saved_status))) or "None")
+        download_disabled_status = True
+
+    if not st.session_state.get('collected_annotations', pd.DataFrame()).empty:
+        csv_export = st.session_state['collected_annotations'].to_csv(index=False).encode('utf-8') 
+        st.download_button(
+            label="Download All Collected Annotations as CSV", data=csv_export,
+            file_name="all_job_recommendation_annotations.csv", mime="text/csv",
+            key="download_all_annotations_final_main_btn", disabled=download_disabled_status
+        )
+        with st.expander("Show Current Collected Annotations Data (All Annotators)", expanded=False):
+            st.dataframe(st.session_state['collected_annotations'], height=300)
+    else:
+        st.info("No annotations collected yet.")
     return
+
 
 def _calculate_average_precision(ranked_relevance_binary, k_val):
     if not ranked_relevance_binary: return 0.0
@@ -627,11 +913,115 @@ def _calculate_average_precision(ranked_relevance_binary, k_val):
 
 def evaluation_page():
     st.header("Model Evaluation")
-    st.write("Evaluates top 20 recommendations based on human annotations.") # English
-    # ... (Evaluation logic as previously defined) ...
-    st.info("Evaluation page implementation.") # English
-    return
+    st.write("Evaluates top 20 recommendations based on human annotations, aligning with CareerBERT's human-grounded evaluation.")
+    
+    all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
+    anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
+    
+    if not all_recommendations: st.warning("No recommendations to evaluate. Run 'Job Recommendation' first."); return
+    if anns_df.empty: st.warning("No annotations collected. Annotate first."); return
 
+    st.subheader("Evaluation Parameters")
+    st.info("The 'Binary Relevance Threshold' converts average graded annotator scores (0-3) into binary 'relevant' (1) or 'not relevant' (0) for calculating P@20, MAP@20, MRR@20, HR@20, and Binary NDCG@20.")
+    relevance_threshold_binary = st.slider("Binary Relevance Threshold", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary_final")
+    
+    if st.button("Run Evaluation on Top 20 Recommendations", key="run_eval_final_btn"):
+        with st.spinner("Calculating human-grounded evaluation metrics..."):
+            all_p_at_20, all_map_at_20, all_mrr_at_20, all_hr_at_20 = [], [], [], []
+            all_binary_ndcg_at_20, all_graded_ndcg_at_20 = [], []
+
+            relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
+            if not relevance_cols: st.error("No annotator relevance columns in annotations."); return
+
+            num_cvs_evaluated = 0
+            for cv_filename, recommended_jobs_df in all_recommendations.items():
+                if recommended_jobs_df.empty: continue
+                
+                recommended_jobs_df['Job.ID'] = recommended_jobs_df['Job.ID'].astype(str)
+                cv_anns_subset = anns_df[anns_df['cv_filename'] == cv_filename].copy()
+                if cv_anns_subset.empty: continue 
+                
+                num_cvs_evaluated +=1
+                cv_anns_subset['job_id'] = cv_anns_subset['job_id'].astype(str)
+                
+                top_20_recs_df = recommended_jobs_df.head(20)
+                ranked_job_ids_list = top_20_recs_df['Job.ID'].tolist()
+                model_similarity_scores = top_20_recs_df['similarity_score'].tolist()
+
+                binary_relevance_scores, graded_relevance_scores = [], []
+                
+                for job_id in ranked_job_ids_list:
+                    job_specific_annotations = cv_anns_subset[cv_anns_subset['job_id'] == job_id]
+                    avg_annotator_score = 0.0 
+                    if not job_specific_annotations.empty:
+                        annotator_scores_for_job = []
+                        for rel_col_name in relevance_cols:
+                            if rel_col_name in job_specific_annotations.columns:
+                                annotator_scores_for_job.extend(pd.to_numeric(job_specific_annotations[rel_col_name], errors='coerce').dropna().tolist())
+                        if annotator_scores_for_job: avg_annotator_score = np.mean(annotator_scores_for_job)
+                    
+                    graded_relevance_scores.append(avg_annotator_score)
+                    binary_relevance_scores.append(1 if avg_annotator_score >= relevance_threshold_binary else 0)
+                
+                k_cutoff = 20 
+                
+                if binary_relevance_scores: 
+                    all_p_at_20.append(sum(binary_relevance_scores) / len(binary_relevance_scores))
+                    all_hr_at_20.append(1 if any(binary_relevance_scores) else 0)
+
+                all_map_at_20.append(_calculate_average_precision(binary_relevance_scores, k_cutoff))
+                
+                current_rr = 0.0
+                for r, is_rel in enumerate(binary_relevance_scores): 
+                    if is_rel: current_rr = 1.0 / (r + 1); break
+                all_mrr_at_20.append(current_rr)
+
+                actual_k = len(binary_relevance_scores) 
+                if actual_k == len(model_similarity_scores) and actual_k > 0:
+                    all_binary_ndcg_at_20.append(ndcg_score([binary_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k))
+                if actual_k == len(graded_relevance_scores) and actual_k == len(model_similarity_scores) and actual_k > 0:
+                     all_graded_ndcg_at_20.append(ndcg_score([graded_relevance_scores], [model_similarity_scores[:actual_k]], k=actual_k))
+
+            eval_results = {
+                'Precision@20': np.mean(all_p_at_20) if all_p_at_20 else 0.0,
+                'MAP@20': np.mean(all_map_at_20) if all_map_at_20 else 0.0,
+                'MRR@20': np.mean(all_mrr_at_20) if all_mrr_at_20 else 0.0,
+                'HR@20': np.mean(all_hr_at_20) if all_hr_at_20 else 0.0,
+                'NDCG@20 (Binary)': np.mean(all_binary_ndcg_at_20) if all_binary_ndcg_at_20 else 0.0,
+                'NDCG@20 (Graded)': np.mean(all_graded_ndcg_at_20) if all_graded_ndcg_at_20 else 0.0
+            }
+
+            st.subheader("Human-Grounded Evaluation Metrics Summary")
+            if num_cvs_evaluated > 0: st.write(f"Calculated based on {num_cvs_evaluated} CVs.")
+            else: st.warning("No CVs with annotations found to calculate metrics."); return 
+
+            metric_config = {
+                'Precision@20': {'fmt': "{:.2%}", 'help': "Avg P@20: Proportion of top 20 relevant items (binary).", 'color': "off"},
+                'MAP@20': {'fmt': "{:.2%}", 'help': "Mean Avg. Precision@20 (binary relevance, considers order).", 'color': "off"},
+                'MRR@20': {'fmt': "{:.4f}", 'help': "Mean Reciprocal Rank@20 (rank of first relevant item, binary).", 'color': "normal"},
+                'HR@20': {'fmt': "{:.2%}", 'help': "Hit Ratio@20: Proportion of CVs with at least one relevant item in top 20.", 'color': "normal"},
+                'NDCG@20 (Binary)': {'fmt': "{:.4f}", 'help': "Avg NDCG@20 using binary relevance from threshold.", 'color': "inverse"},
+                'NDCG@20 (Graded)': {'fmt': "{:.4f}", 'help': "Avg NDCG@20 using average annotator scores as graded relevance.", 'color': "inverse"}
+            }
+            keys_to_display = ['Precision@20', 'MAP@20', 'MRR@20', 'HR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']
+            
+            # Display in 2 rows of 3 columns
+            metric_cols_r1 = st.columns(3)
+            metric_cols_r2 = st.columns(3)
+            
+            for i, key in enumerate(keys_to_display):
+                if key in eval_results:
+                    value = eval_results[key]
+                    cfg = metric_config[key]
+                    current_col = metric_cols_r1[i] if i < 3 else metric_cols_r2[i-3]
+                    
+                    val_str = "N/A"
+                    if isinstance(value, (int, float, np.number)) and not (isinstance(value, float) and np.isnan(value)):
+                        val_str = cfg['fmt'].format(value * 100 if '%' in cfg['fmt'] else value)
+                    elif isinstance(value, str): val_str = value
+                    
+                    current_col.metric(label=key, value=val_str, delta_color=cfg['color'], help=cfg['help'])
+    return
 
 # --- Main App Logic (Page Navigation) ---
 st.sidebar.title("Navigation")
@@ -642,7 +1032,7 @@ page = st.sidebar.radio("Go to", page_options, key="main_nav_radio")
 if page == "Home":
     home_page()
 elif page == "Preprocessing":
-    preprocessing_page() 
+    preprocessing_page()
 elif page == "TSDAE (Noise Injection)":
     tsdae_page()
 elif page == "BERT Model":
