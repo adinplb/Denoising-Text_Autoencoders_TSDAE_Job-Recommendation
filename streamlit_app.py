@@ -81,8 +81,7 @@ if 'all_recommendations_for_annotation' not in st.session_state:
     st.session_state['all_recommendations_for_annotation'] = {} 
 if 'collected_annotations' not in st.session_state: 
     st.session_state['collected_annotations'] = pd.DataFrame()
-if 'uploaded_annotation_data' not in st.session_state: # For storing DF from uploaded annotation CSV
-    st.session_state['uploaded_annotation_data'] = None
+# 'uploaded_annotation_data' is removed, collected_annotations will be the single source
 if 'annotator_details' not in st.session_state:
     st.session_state['annotator_details'] = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
 if 'current_annotator_slot_for_input' not in st.session_state: 
@@ -769,15 +768,18 @@ def job_recommendation_page():
     if len(jobs_for_sim_df) != len(job_emb_for_rec):
         st.error(f"Alignment error: `jobs_for_sim_df` ({len(jobs_for_sim_df)}) != embeddings ({len(job_emb_for_rec)})."); return
 
+    # Multiselect for choosing which details to display in the table on this page
     default_details_to_show_rec_page = ['Company', 'City', 'Position'] 
-    available_options_for_rec_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
-    if 'Job.Description' not in available_options_for_rec_display and 'Job.Description' in jobs_for_sim_df.columns: # Ensure Job.Description can be selected
-        available_options_for_rec_display.append('Job.Description')
-    default_details_filtered_rec_page = [col for col in default_details_to_show_rec_page if col in available_options_for_rec_display]
+    # Ensure Job.Description is an option if available
+    options_for_rec_display = [col for col in JOB_DETAIL_FEATURES_TO_DISPLAY if col in jobs_for_sim_df.columns]
+    if 'Job.Description' not in options_for_rec_display and 'Job.Description' in jobs_for_sim_df.columns:
+        options_for_rec_display.append('Job.Description')
+
+    default_details_filtered_rec_page = [col for col in default_details_to_show_rec_page if col in options_for_rec_display]
     
     selected_details_for_rec_display = st.multiselect(
         "Select additional job details to display in the recommendations table:",
-        options=sorted(list(set(available_options_for_rec_display))), 
+        options=sorted(list(set(options_for_rec_display))), 
         default=default_details_filtered_rec_page,
         key="job_rec_detail_multiselect_page"
     )
@@ -823,64 +825,96 @@ def annotation_page():
     if not st.session_state.get('all_recommendations_for_annotation'):
         st.warning("Generate recommendations first on the 'Job Recommendation' page."); return
     
+    # Initialize session state variables if they don't exist
     if 'annotator_details' not in st.session_state: 
         st.session_state.annotator_details = {slot: {'actual_name': '', 'profile_background': ''} for slot in ANNOTATORS}
     if 'current_annotator_slot_for_input' not in st.session_state:
          st.session_state.current_annotator_slot_for_input = ANNOTATORS[0] if ANNOTATORS else None
     if 'annotators_saved_status' not in st.session_state:
         st.session_state.annotators_saved_status = set()
+    if 'collected_annotations' not in st.session_state: 
+        st.session_state.collected_annotations = pd.DataFrame()
 
-    st.subheader("🧑‍💻 Annotator Profile & Selection")
+
+    # --- Section for Uploading Pre-filled Annotations ---
+    st.sidebar.subheader("Load Annotations from CSV")
+    uploaded_annotations_file = st.sidebar.file_uploader("Upload completed annotation CSV", type="csv", key="annotation_csv_uploader")
+    
+    if uploaded_annotations_file is not None:
+        if st.sidebar.button("Load Annotations from CSV", key="load_uploaded_annotations_btn"):
+            try:
+                uploaded_df = pd.read_csv(uploaded_annotations_file)
+                # Basic validation (can be expanded)
+                required_cols = ['cv_filename', 'job_id'] + [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS))]
+                if all(col in uploaded_df.columns for col in required_cols):
+                    st.session_state.collected_annotations = uploaded_df
+                    # Reset saved status as we are loading new data
+                    st.session_state.annotators_saved_status = set(ANNOTATORS) # Assume uploaded CSV is complete
+                    st.success(f"Successfully loaded annotations from '{uploaded_annotations_file.name}'. All annotator slots marked as saved based on this upload.")
+                    st.experimental_rerun() # Rerun to reflect loaded data in the form
+                else:
+                    st.error(f"Uploaded CSV is missing required columns. Expected: {', '.join(required_cols)}")
+            except Exception as e:
+                st.error(f"Error processing uploaded CSV: {e}")
+    st.sidebar.markdown("---")
+
+
+    # --- Annotator Profile & Slot Selection ---
+    st.subheader("🧑‍💻 Annotator Profile & Current Slot")
     if ANNOTATORS:
         selected_slot = st.selectbox(
-            "Select Your Annotator Slot to Enter/Edit Details and Annotations:",
+            "Select Your Annotator Slot to Edit Profile and Enter Annotations:",
             options=ANNOTATORS,
             index=ANNOTATORS.index(st.session_state.current_annotator_slot_for_input) if st.session_state.current_annotator_slot_for_input in ANNOTATORS else 0,
-            key="annotator_slot_selector_main"
+            key="annotator_slot_selector_main_page"
         )
         st.session_state.current_annotator_slot_for_input = selected_slot
 
         if selected_slot:
             with st.expander(f"Edit Profile for {selected_slot}", expanded=True):
-                name_val = st.session_state.annotator_details.get(selected_slot, {}).get('actual_name', '')
-                bg_val = st.session_state.annotator_details.get(selected_slot, {}).get('profile_background', '')
-                actual_name = st.text_input(f"Your Name", value=name_val, key=f"actual_name_input_{selected_slot}_main")
-                profile_bg = st.text_area(f"Your Profile Background", value=bg_val, key=f"profile_bg_input_{selected_slot}_main", height=100 )
+                # Get current values or provide defaults
+                current_name = st.session_state.annotator_details.get(selected_slot, {}).get('actual_name', selected_slot) # Default to slot name
+                current_profile_bg = st.session_state.annotator_details.get(selected_slot, {}).get('profile_background', '')
+
+                actual_name = st.text_input(f"Your Name:", value=current_name, key=f"actual_name_input_{selected_slot}_page")
+                profile_bg = st.text_area(f"Your Profile Background:", value=current_profile_bg, key=f"profile_bg_input_{selected_slot}_page", height=100 )
+                
+                # Update session state as inputs change (this happens on Streamlit's rerun logic)
                 st.session_state.annotator_details[selected_slot]['actual_name'] = actual_name
                 st.session_state.annotator_details[selected_slot]['profile_background'] = profile_bg
     else:
-        st.warning("No annotator slots defined."); return
+        st.warning("No annotator slots defined. Please check the ANNOTATORS constant in the code."); return
     
     st.markdown("---")
-    current_annotator_display_name = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
-    st.subheader(f"📝 Annotate Recommendations as {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
+    current_annotator_name_display = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
+    st.subheader(f"📝 Annotate Recommendations as: {st.session_state.current_annotator_slot_for_input} ({current_annotator_name_display})")
     
-    if 'collected_annotations' not in st.session_state or st.session_state.collected_annotations.empty:
+    # Initialize or ensure structure of collected_annotations DataFrame
+    if st.session_state.collected_annotations.empty and st.session_state.all_recommendations_for_annotation:
         base_records_init = []
-        if st.session_state.all_recommendations_for_annotation:
-            for cv_fn_init, rec_df_init in st.session_state.all_recommendations_for_annotation.items():
-                rec_df_unique_init = rec_df_init.drop_duplicates(subset=['Job.ID'], keep='first')
-                for _, rec_row_init in rec_df_unique_init.iterrows():
-                    record_init = {
-                        'cv_filename': cv_fn_init, 'job_id': str(rec_row_init['Job.ID']),
-                        'job_title': rec_row_init.get('Title', 'N/A'), 
-                        'similarity_score': rec_row_init['similarity_score'], 
-                        'cluster': rec_row_init.get('cluster', pd.NA)
-                    }
-                    for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY + ['combined_jobs']: 
-                        record_init[detail_col] = rec_row_init.get(detail_col, '') 
+        for cv_fn_init, rec_df_init in st.session_state.all_recommendations_for_annotation.items():
+            rec_df_unique_init = rec_df_init.drop_duplicates(subset=['Job.ID'], keep='first')
+            for _, rec_row_init in rec_df_unique_init.iterrows():
+                record_init = {
+                    'cv_filename': cv_fn_init, 'job_id': str(rec_row_init['Job.ID']),
+                    'job_title': rec_row_init.get('Title', 'N/A'), 
+                    'similarity_score': rec_row_init['similarity_score'], 
+                    'cluster': rec_row_init.get('cluster', pd.NA)
+                }
+                for detail_col in JOB_DETAIL_FEATURES_TO_DISPLAY + ['combined_jobs']: 
+                    record_init[detail_col] = rec_row_init.get(detail_col, '') 
 
-                    for i_ann, slot_name_ann in enumerate(ANNOTATORS):
-                        record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
-                        record_init[f'annotator_{i_ann+1}_actual_name'] = ""
-                        record_init[f'annotator_{i_ann+1}_profile_background'] = ""
-                        record_init[f'annotator_{i_ann+1}_relevance'] = pd.NA 
-                        record_init[f'annotator_{i_ann+1}_feedback'] = ""
-                    base_records_init.append(record_init)
-            if base_records_init:
-                st.session_state.collected_annotations = pd.DataFrame(base_records_init)
-            else: 
-                st.session_state.collected_annotations = pd.DataFrame() 
+                for i_ann, slot_name_ann in enumerate(ANNOTATORS):
+                    record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
+                    record_init[f'annotator_{i_ann+1}_actual_name'] = ""
+                    record_init[f'annotator_{i_ann+1}_profile_background'] = ""
+                    record_init[f'annotator_{i_ann+1}_relevance'] = pd.NA 
+                    record_init[f'annotator_{i_ann+1}_feedback'] = ""
+                base_records_init.append(record_init)
+        if base_records_init:
+            st.session_state.collected_annotations = pd.DataFrame(base_records_init)
+        else: 
+            st.session_state.collected_annotations = pd.DataFrame() 
 
     relevance_options_map = {
         0: "0 (Very Irrelevant)", 1: "1 (Slightly Relevant)",
@@ -890,28 +924,25 @@ def annotation_page():
     current_annotator_slot = st.session_state.current_annotator_slot_for_input
     annotator_idx_for_cols = ANNOTATORS.index(current_annotator_slot) 
 
-    with st.form(key=f"annotation_form_{current_annotator_slot}_main"):
+    with st.form(key=f"annotation_form_slot_{current_annotator_slot}"):
         form_input_for_current_annotator = [] 
         expand_cv_default = len(st.session_state['all_recommendations_for_annotation']) == 1
-
-        # Determine available detail columns for the multiselect options
-        all_possible_detail_cols = list(set(JOB_DETAIL_FEATURES_TO_DISPLAY + ['Job.Description'])) # Ensure Job.Description is an option
-        available_details_for_ann_display = []
+        
+        available_details_for_ann_multiselect = []
         if st.session_state['all_recommendations_for_annotation']:
-            first_cv_key_ann = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
-            if first_cv_key_ann in st.session_state['all_recommendations_for_annotation']:
-                first_rec_df_ann = st.session_state['all_recommendations_for_annotation'][first_cv_key_ann]
-                available_details_for_ann_display = [col for col in all_possible_detail_cols if col in first_rec_df_ann.columns]
+            first_cv_key = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
+            if first_cv_key in st.session_state['all_recommendations_for_annotation']:
+                first_rec_df = st.session_state['all_recommendations_for_annotation'][first_cv_key]
+                all_possible_details = list(set(JOB_DETAIL_FEATURES_TO_DISPLAY + ['Job.Description']))
+                available_details_for_ann_multiselect = [col for col in all_possible_details if col in first_rec_df.columns]
         
-        default_details_for_ann_display = [col for col in ['Company', 'Job.Description', 'Employment.Type', 'Position'] if col in available_details_for_ann_display]
+        default_details = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann_multiselect]
         
-        # Place multiselect outside the CV loop, but inside the form if its selection should be part of the submission
-        # Or, if it's just for display control, it can be outside the form. Let's keep it inside for now to control view per annotator session.
-        selected_details_for_annotation_display = st.multiselect(
-            "Select job details to view during annotation:",
-            options=sorted(list(set(available_details_for_ann_display))), 
-            default=default_details_for_ann_display,
-            key=f"annotation_detail_multiselect_widget_{current_annotator_slot}"
+        selected_details_to_display_ann = st.multiselect(
+            "Select job details to view:",
+            options=sorted(list(set(available_details_for_ann_multiselect))), 
+            default=default_details,
+            key=f"detail_multiselect_ann_{current_annotator_slot}"
         )
 
         for cv_filename, recommendations_df_original in st.session_state['all_recommendations_for_annotation'].items():
@@ -922,8 +953,7 @@ def annotation_page():
                     job_id_str_ann = str(job_row_ann['Job.ID']) 
                     st.markdown(f"**Job ID:** {job_id_str_ann} | **Title:** {job_row_ann.get('Title', 'N/A')}")
                     
-                    # Display selected details
-                    for detail_key in selected_details_for_annotation_display: 
+                    for detail_key in selected_details_to_display_ann: 
                         if detail_key in job_row_ann and pd.notna(job_row_ann[detail_key]):
                             detail_value = job_row_ann[detail_key]
                             display_label = detail_key.replace('.', ' ').replace('_', ' ').title() 
@@ -971,6 +1001,17 @@ def annotation_page():
         profile_bg_current = profile_details_current.get('profile_background', '')
         updated_items_count = 0
 
+        # Ensure collected_annotations has the necessary annotator columns before trying to update
+        for i_init, slot_init_name in enumerate(ANNOTATORS):
+            for col_suffix in ['slot', 'actual_name', 'profile_background', 'relevance', 'feedback']:
+                col_name_init = f'annotator_{i_init+1}_{col_suffix}'
+                if col_name_init not in st.session_state.collected_annotations.columns:
+                    if 'relevance' in col_suffix :
+                        st.session_state.collected_annotations[col_name_init] = pd.NA
+                    else:
+                        st.session_state.collected_annotations[col_name_init] = ""
+
+
         for item_ann in form_input_for_current_annotator:
             mask_update = (st.session_state.collected_annotations['cv_filename'] == item_ann['cv_filename']) & \
                           (st.session_state.collected_annotations['job_id'] == item_ann['job_id'])
@@ -984,11 +1025,18 @@ def annotation_page():
                 st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_relevance'] = item_ann['relevance']
                 st.session_state.collected_annotations.loc[idx, f'annotator_{annotator_idx_for_cols+1}_feedback'] = item_ann['feedback']
                 updated_items_count +=1
-            else:
-                st.warning(f"Base record for CV {item_ann['cv_filename']}, Job {item_ann['job_id']} not found. Annotation not saved.")
+            else: # This might happen if collected_annotations was not pre-populated correctly or if recommendations changed
+                st.warning(f"Base record for CV {item_ann['cv_filename']}, Job {item_ann['job_id']} not found for update. This annotation was not saved. Try re-generating recommendations or ensure CSV upload created necessary rows if used.")
         
-        st.success(f"Annotations by {current_annotator_display_name} saved/updated for {updated_items_count} items.")
-        st.session_state.annotators_saved_status.add(current_annotator_slot)
+        if updated_items_count > 0:
+            st.success(f"Annotations by {current_annotator_display_name} saved/updated for {updated_items_count} items.")
+            st.session_state.annotators_saved_status.add(current_annotator_slot)
+            st.experimental_rerun() # Rerun to update displayed annotations if any
+        elif form_input_for_current_annotator : # Form submitted but no items matched for update
+             st.warning("No existing records were updated. Please ensure recommendations are current and annotations table is initialized.")
+        else: # Form submitted but no data was in the form (e.g., no recommendations)
+            st.info("No annotation entries were submitted.")
+
 
     st.markdown("---")
     st.subheader("Final Actions")
@@ -1013,7 +1061,7 @@ def annotation_page():
         with st.expander("Show Current Collected Annotations Data (All Annotators)", expanded=False):
             st.dataframe(st.session_state['collected_annotations'], height=300)
     else:
-        st.info("No annotations collected yet.")
+        st.info("No annotations collected yet, or annotations from CSV not loaded.")
     return
 
 
@@ -1032,58 +1080,21 @@ def evaluation_page():
     st.write("Evaluates top 20 recommendations based on human annotations.")
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
+    anns_df = st.session_state.get('collected_annotations', pd.DataFrame()) # Always use collected_annotations now
     
-    st.sidebar.subheader("Evaluation Data Source")
-    annotation_source = st.sidebar.radio(
-        "Use annotations from:",
-        ("Current Session", "Uploaded CSV File"),
-        key="eval_annotation_source_selector"
-    )
+    if not all_recommendations: 
+        st.warning("No recommendations available to evaluate. Please run 'Job Recommendation' first."); return
+    if anns_df.empty: 
+        st.warning("No annotation data available. Please use the 'Annotation' page to input or upload annotations."); return
 
-    anns_df = None
-    if annotation_source == "Uploaded CSV File":
-        uploaded_ann_file = st.sidebar.file_uploader("Upload Annotation CSV", type=['csv'], key="eval_ann_uploader")
-        if uploaded_ann_file is not None:
-            try:
-                anns_df = pd.read_csv(uploaded_ann_file)
-                required_ann_cols = ['cv_filename', 'job_id'] + [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS))]
-                if not all(col in anns_df.columns for col in required_ann_cols):
-                    st.error(f"Uploaded CSV is missing some required columns. Expected at least: {', '.join(required_ann_cols)}")
-                    anns_df = None 
-                else:
-                    st.sidebar.success(f"Using uploaded annotation file: {uploaded_ann_file.name}")
-                    anns_df['job_id'] = anns_df['job_id'].astype(str)
-                    st.session_state['uploaded_annotation_data'] = anns_df 
-
-            except Exception as e:
-                st.error(f"Error reading or processing uploaded annotation CSV: {e}")
-                anns_df = None
-        elif st.session_state.get('uploaded_annotation_data') is not None: 
-            anns_df = st.session_state.uploaded_annotation_data
-            st.sidebar.info("Using previously uploaded annotation data.")
-        else:
-            st.sidebar.warning("No annotation CSV uploaded. Please upload or switch to 'Current Session'.")
-    
-    if anns_df is None: 
-        anns_df = st.session_state.get('collected_annotations', pd.DataFrame())
-        if annotation_source == "Uploaded CSV File": 
-             st.sidebar.info("Falling back to annotations from current session.")
-        else:
-             st.sidebar.info("Using annotations collected in the current session.")
-
-
-    if not all_recommendations: st.warning("No recommendations to evaluate. Run 'Job Recommendation' first."); return
-    if anns_df.empty: st.warning("No annotation data available. Annotate or upload first."); return
-
+    st.info("This evaluation uses the annotation data currently loaded/entered in the 'Annotation' page.")
     st.subheader("Evaluation Parameters")
     st.info("The 'Binary Relevance Threshold' converts average graded annotator scores (0-3) into binary 'relevant' (1) or 'not relevant' (0) for calculating P@20, MAP@20, MRR@20, HR@20, and Binary NDCG@20.")
     relevance_threshold_binary = st.slider("Binary Relevance Threshold", 0.0, 3.0, 1.5, 0.1, key="eval_thresh_binary_final")
     
     if st.button("Run Evaluation on Top 20 Recommendations", key="run_eval_final_btn"):
         with st.spinner("Calculating human-grounded evaluation metrics..."):
-            
             per_cv_metrics_list = [] 
-
             relevance_cols = [f'annotator_{i+1}_relevance' for i in range(len(ANNOTATORS)) if f'annotator_{i+1}_relevance' in anns_df.columns]
             if not relevance_cols: st.error("No annotator relevance columns in the annotation data."); return
 
@@ -1149,15 +1160,13 @@ def evaluation_page():
                 st.dataframe(per_cv_df_display.set_index('CV Filename'))
                 
                 avg_metrics_dict = {
-                    'P@20': per_cv_df['P@20'].mean(),
-                    'MAP@20': per_cv_df['MAP@20'].mean(),
-                    'MRR@20': per_cv_df['MRR@20'].mean(),
-                    'HR@20': per_cv_df['HR@20'].mean(),
+                    'P@20': per_cv_df['P@20'].mean(), 'MAP@20': per_cv_df['MAP@20'].mean(),
+                    'MRR@20': per_cv_df['MRR@20'].mean(), 'HR@20': per_cv_df['HR@20'].mean(),
                     'NDCG@20 (Binary)': per_cv_df['NDCG@20 (Binary)'].mean(),
                     'NDCG@20 (Graded)': per_cv_df['NDCG@20 (Graded)'].mean()
                 }
             else:
-                st.info("No CVs were evaluated (perhaps no recommendations or no matching annotations).")
+                st.info("No CVs were evaluated.")
                 avg_metrics_dict = {key: 'N/A' for key in ['P@20', 'MAP@20', 'MRR@20', 'HR@20', 'NDCG@20 (Binary)', 'NDCG@20 (Graded)']}
 
             st.subheader("Average Human-Grounded Evaluation Metrics Summary")
