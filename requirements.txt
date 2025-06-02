@@ -1,5 +1,8 @@
 sentence-transformers
 torch
+torchvision
+torchaudio
+datasets 
 PyPDF2
 streamlit
 pandas
@@ -14,4 +17,5 @@ plotly
 umap-learn
 kaggle
 kagglehub
+
 
