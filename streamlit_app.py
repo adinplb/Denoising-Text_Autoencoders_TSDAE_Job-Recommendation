@@ -49,8 +49,8 @@ FEATURES_TO_COMBINE = [
     'City', 'State.Name', 'Industry', 'Job.Description', 
     'Employment.Type', 'Education.Required'
 ]
-# Features to be available for display and potentially stored in annotation outputs
-JOB_DETAIL_FEATURES = [ # Renamed for clarity
+# UPDATED Constant name and content
+JOB_DETAIL_FEATURES_TO_DISPLAY = [
     'Company', 'Status', 'City', 'Job.Description', 'Employment.Type', 
     'Position', 'Industry', 'Education.Required', 'State.Name'
 ] 
@@ -60,7 +60,6 @@ ANNOTATORS = ["Annotator 1", "Annotator 2", "Annotator 3", "Annotator 4", "Annot
 
 
 # --- Global Data Storage (using Streamlit Session State) ---
-# Initialize all session state variables here to prevent AttributeError
 default_values = {
     'data': None,
     'job_text_embeddings': None,
@@ -81,7 +80,7 @@ for key, value in default_values.items():
 
 # --- Helper Functions ---
 @st.cache_data(show_spinner='Loading job data...')
-def load_and_combine_data_from_url(url, features_to_combine_list, detail_features_to_ensure):
+def load_and_combine_data_from_url(url, features_to_combine_list, detail_features_to_ensure): # Now uses detail_features_to_ensure
     try:
         df_full = pd.read_csv(url) 
         st.success('Successfully loaded data from URL!')
@@ -95,7 +94,7 @@ def load_and_combine_data_from_url(url, features_to_combine_list, detail_feature
         
         cols_to_load_set = set(['Job.ID', 'Title']) 
         cols_to_load_set.update(existing_features_to_combine)
-        cols_to_load_set.update(detail_features_to_ensure) # Ensure detail features are loaded
+        cols_to_load_set.update(detail_features_to_ensure) 
         
         actual_cols_to_load = [col for col in list(cols_to_load_set) if col in df_full.columns]
         df = df_full[actual_cols_to_load].copy() 
@@ -226,12 +225,10 @@ def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_
         status_text.empty()
     return data_df
 
-# CORRECTED DECORATOR: Removed experimental_allow_rerun
 @st.cache_resource 
-def load_bert_model_once(model_name="all-MiniLM-L6-v2"):
+def load_bert_model_once(model_name="all-MiniLM-L6-v2"): 
     try:
         model = SentenceTransformer(model_name)
-        # st.success(f"Base model '{model_name}' loaded.") # Can be noisy if called often
         return model
     except Exception as e:
         st.error(f"Error loading BERT model '{model_name}': {e}")
@@ -307,6 +304,7 @@ def home_page():
     st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
 
     if st.session_state.get('data') is None:
+        # Pass both lists of features to ensure all necessary columns are loaded
         st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE, JOB_DETAIL_FEATURES_TO_DISPLAY)
     
     data_df = st.session_state.get('data')
@@ -333,7 +331,7 @@ def home_page():
 
         st.subheader('Search Word in Feature') 
         search_word = st.text_input("Enter word to search:", key="home_search_word_new") 
-        all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES_TO_DISPLAY
+        all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES_TO_DISPLAY # Use corrected constant
         searchable_cols = sorted(list(set(col for col in all_available_cols_for_search if col in data_df.columns)))
         search_column = st.selectbox("Select feature to search in:", [''] + searchable_cols, key="home_search_column_new") 
 
@@ -846,38 +844,45 @@ def annotation_page():
     if 'collected_annotations' not in st.session_state: 
         st.session_state.collected_annotations = pd.DataFrame()
 
+    # --- Section for Uploading Pre-filled Annotations ---
     st.sidebar.subheader("Load Annotations")
     uploaded_annotations_file = st.sidebar.file_uploader(
         "Upload completed annotation CSV to replace current annotations", 
         type="csv", 
-        key="annotation_csv_uploader_sidebar_main_v2"
+        key="annotation_csv_uploader_sidebar_main_v2" # Unique key
     )
     
     if uploaded_annotations_file is not None:
-        if st.sidebar.button("Load & Replace Annotations from CSV", key="load_uploaded_annotations_sidebar_btn_main_v2"):
+        if st.sidebar.button("Load & Replace Annotations from CSV", key="load_uploaded_annotations_sidebar_btn_main_v2"): # Unique key
             try:
                 uploaded_df = pd.read_csv(uploaded_annotations_file)
+                # Basic validation (can be expanded)
                 required_cols_check = ['cv_filename', 'job_id'] 
                 has_one_relevance_col = any(f'annotator_{i+1}_relevance' in uploaded_df.columns for i in range(len(ANNOTATORS)))
 
                 if all(col in uploaded_df.columns for col in required_cols_check) and has_one_relevance_col:
+                    # Ensure job_id is string for consistency
+                    uploaded_df['job_id'] = uploaded_df['job_id'].astype(str)
                     st.session_state.collected_annotations = uploaded_df.copy() 
+                    # Assume if CSV is uploaded, all annotators' data is in it and "saved"
                     st.session_state.annotators_saved_status = set(ANNOTATORS) 
                     st.success(f"Successfully loaded and replaced annotations from '{uploaded_annotations_file.name}'.")
-                    st.rerun() # Use st.rerun() instead of st.experimental_rerun()
+                    st.rerun() # Replaced experimental_rerun
                 else:
                     st.error(f"Uploaded CSV is missing required columns (e.g., cv_filename, job_id, annotator_X_relevance).")
             except Exception as e:
                 st.error(f"Error processing uploaded CSV: {e}")
     st.sidebar.markdown("---")
 
+
+    # --- Annotator Profile & Slot Selection ---
     st.subheader("🧑‍💻 Annotator Profile & Current Slot")
     if ANNOTATORS:
         selected_slot = st.selectbox(
             "Select Your Annotator Slot to Enter/Edit Details and Annotations:",
             options=ANNOTATORS,
             index=ANNOTATORS.index(st.session_state.current_annotator_slot_for_input) if st.session_state.current_annotator_slot_for_input in ANNOTATORS else 0,
-            key="annotator_slot_selector_main_v3"
+            key="annotator_slot_selector_main_v3" # Unique key
         )
         st.session_state.current_annotator_slot_for_input = selected_slot
 
@@ -885,18 +890,18 @@ def annotation_page():
             with st.expander(f"Edit Profile for {selected_slot}", expanded=True):
                 name_val = st.session_state.annotator_details.get(selected_slot, {}).get('actual_name', '')
                 bg_val = st.session_state.annotator_details.get(selected_slot, {}).get('profile_background', '')
-                actual_name = st.text_input(f"Your Name", value=name_val, key=f"actual_name_input_{selected_slot}_main_v3")
-                profile_bg = st.text_area(f"Your Profile Background", value=bg_val, key=f"profile_bg_input_{selected_slot}_main_v3", height=100 )
+                actual_name = st.text_input(f"Your Name", value=name_val, key=f"actual_name_input_{selected_slot}_main_v3") # Unique key
+                profile_bg = st.text_area(f"Your Profile Background", value=bg_val, key=f"profile_bg_input_{selected_slot}_main_v3", height=100 ) # Unique key
                 st.session_state.annotator_details[selected_slot]['actual_name'] = actual_name
                 st.session_state.annotator_details[selected_slot]['profile_background'] = profile_bg
     else:
         st.warning("No annotator slots defined."); return
     
     st.markdown("---")
-    # Define current_annotator_display_name here before it's used in the subheader and button label
     current_annotator_display_name = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
     st.subheader(f"📝 Annotate Recommendations as: {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
     
+    # Initialize collected_annotations DataFrame structure if it's empty and recommendations exist
     if st.session_state.collected_annotations.empty and st.session_state.get('all_recommendations_for_annotation'):
         base_records_init = []
         for cv_fn_init, rec_df_init in st.session_state.all_recommendations_for_annotation.items():
@@ -908,8 +913,10 @@ def annotation_page():
                     'similarity_score': rec_row_init.get('similarity_score', pd.NA), 
                     'cluster': rec_row_init.get('cluster', pd.NA)
                 }
-                for detail_col in JOB_DETAIL_FEATURES + ['combined_jobs']: 
+                # Add all JOB_DETAIL_FEATURES and 'combined_jobs' to the base record
+                for detail_col in JOB_DETAIL_FEATURES + ['combined_jobs']: # Use corrected constant
                     record_init[detail_col] = rec_row_init.get(detail_col, '') 
+
                 for i_ann, slot_name_ann in enumerate(ANNOTATORS):
                     record_init[f'annotator_{i_ann+1}_slot'] = slot_name_ann
                     record_init[f'annotator_{i_ann+1}_actual_name'] = ""
@@ -917,8 +924,10 @@ def annotation_page():
                     record_init[f'annotator_{i_ann+1}_relevance'] = pd.NA 
                     record_init[f'annotator_{i_ann+1}_feedback'] = ""
                 base_records_init.append(record_init)
-        if base_records_init: st.session_state.collected_annotations = pd.DataFrame(base_records_init)
-        else: st.session_state.collected_annotations = pd.DataFrame() 
+        if base_records_init:
+            st.session_state.collected_annotations = pd.DataFrame(base_records_init)
+        else: 
+            st.session_state.collected_annotations = pd.DataFrame() 
 
     relevance_options_map = {
         0: "0 (Very Irrelevant)", 1: "1 (Slightly Relevant)",
@@ -927,7 +936,7 @@ def annotation_page():
     current_annotator_slot = st.session_state.current_annotator_slot_for_input
     annotator_idx_for_cols = ANNOTATORS.index(current_annotator_slot) 
 
-    with st.form(key=f"annotation_form_slot_{current_annotator_slot}_main_v3"):
+    with st.form(key=f"annotation_form_slot_{current_annotator_slot}_main_v3"): # Unique key
         form_input_for_current_annotator = [] 
         expand_cv_default = len(st.session_state.get('all_recommendations_for_annotation', {})) == 1
         
@@ -936,7 +945,8 @@ def annotation_page():
             first_cv_key_ann = list(st.session_state['all_recommendations_for_annotation'].keys())[0]
             if first_cv_key_ann in st.session_state['all_recommendations_for_annotation']:
                 first_rec_df_ann = st.session_state['all_recommendations_for_annotation'][first_cv_key_ann]
-                all_possible_details = list(set(JOB_DETAIL_FEATURES + ['Job.Description']))
+                # Ensure all detail features + Job.Description are options if they exist in the recommendations
+                all_possible_details = list(set(JOB_DETAIL_FEATURES + ['Job.Description'])) # Corrected constant
                 available_details_for_ann_multiselect = [col for col in all_possible_details if col in first_rec_df_ann.columns]
         
         default_details_to_show_ann = [col for col in ['Company', 'Job.Description', 'Employment.Type'] if col in available_details_for_ann_multiselect]
@@ -945,7 +955,7 @@ def annotation_page():
             "Select job details to view during annotation:",
             options=sorted(list(set(available_details_for_ann_multiselect))), 
             default=default_details_to_show_ann,
-            key=f"detail_multiselect_ann_{current_annotator_slot}_v3"
+            key=f"detail_multiselect_ann_{current_annotator_slot}_v3" # Unique key
         )
 
         for cv_filename, recommendations_df_original in st.session_state.get('all_recommendations_for_annotation', {}).items():
@@ -963,8 +973,8 @@ def annotation_page():
                             else: st.caption(f"*{display_label}:* {detail_value}")
                     st.caption(f"*Similarity Score:* {job_row_ann.get('similarity_score', 0.0):.4f} | *Cluster:* {job_row_ann.get('cluster', 'N/A')}")
                     st.markdown("---") 
-                    relevance_key_ann = f"relevance_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}_v3"
-                    feedback_key_ann = f"feedback_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}_v3"
+                    relevance_key_ann = f"relevance_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}_v3" # Unique key
+                    feedback_key_ann = f"feedback_{cv_filename}_{job_id_str_ann}_{current_annotator_slot}_v3" # Unique key
                     default_relevance = 0; default_feedback = ""
                     if not st.session_state.collected_annotations.empty:
                         mask = (st.session_state.collected_annotations['cv_filename'] == cv_filename) & (st.session_state.collected_annotations['job_id'] == job_id_str_ann)
