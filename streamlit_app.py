@@ -226,11 +226,12 @@ def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_
         status_text.empty()
     return data_df
 
-# CORRECTED DECORATOR
-@st.cache_resource(experimental_allow_rerun=True) 
+# CORRECTED DECORATOR: Removed experimental_allow_rerun
+@st.cache_resource 
 def load_bert_model_once(model_name="all-MiniLM-L6-v2"):
     try:
         model = SentenceTransformer(model_name)
+        # st.success(f"Base model '{model_name}' loaded.") # Can be noisy if called often
         return model
     except Exception as e:
         st.error(f"Error loading BERT model '{model_name}': {e}")
@@ -863,7 +864,7 @@ def annotation_page():
                     st.session_state.collected_annotations = uploaded_df.copy() 
                     st.session_state.annotators_saved_status = set(ANNOTATORS) 
                     st.success(f"Successfully loaded and replaced annotations from '{uploaded_annotations_file.name}'.")
-                    st.rerun() 
+                    st.rerun() # Use st.rerun() instead of st.experimental_rerun()
                 else:
                     st.error(f"Uploaded CSV is missing required columns (e.g., cv_filename, job_id, annotator_X_relevance).")
             except Exception as e:
@@ -892,6 +893,7 @@ def annotation_page():
         st.warning("No annotator slots defined."); return
     
     st.markdown("---")
+    # Define current_annotator_display_name here before it's used in the subheader and button label
     current_annotator_display_name = st.session_state.annotator_details.get(st.session_state.current_annotator_slot_for_input, {}).get('actual_name', st.session_state.current_annotator_slot_for_input)
     st.subheader(f"📝 Annotate Recommendations as: {st.session_state.current_annotator_slot_for_input} ({current_annotator_display_name})")
     
@@ -1130,7 +1132,6 @@ def evaluation_page():
                     avg_row_display[col] = f"{avg_metrics_dict[col]:.4f}" if pd.notna(avg_metrics_dict[col]) else "N/A"
                 
                 avg_row_df_display = pd.DataFrame([avg_row_display])
-                # Set index before concat to ensure proper alignment if CV Filenames are not unique (though they should be)
                 per_cv_df_display_indexed = per_cv_df_display.set_index('CV Filename')
                 avg_row_df_display_indexed = avg_row_df_display.set_index('CV Filename')
                 per_cv_df_display_with_avg = pd.concat([per_cv_df_display_indexed, avg_row_df_display_indexed])
