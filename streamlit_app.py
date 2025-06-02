@@ -33,24 +33,21 @@ def download_nltk_resources():
     
     for resource_name, resource_path_fragment in resources_to_download.items():
         try:
-            # A more robust check might be to try using the resource if a direct find path is tricky
             if resource_name == "stopwords":
                 stopwords.words('english')
-            elif resource_name == "punkt": # Covers punkt and its typical dependencies
+            elif resource_name == "punkt": 
                 word_tokenize("test sentence for punkt")
-            # No direct find for punkt_tab, download is attempted if punkt fails or if explicitly needed
-            # Forcing a download attempt for punkt_tab as per error message
-            if resource_name == "punkt_tab": # Explicitly try to download punkt_tab
+            if resource_name == "punkt_tab": 
                  try:
-                     nltk.data.find(resource_path_fragment) # Try to find it first
+                     nltk.data.find(resource_path_fragment) 
                  except LookupError:
                      st.info(f"NLTK resource '{resource_name}' not found, attempting download...")
                      nltk.download(resource_name, quiet=True)
 
-        except LookupError: # This will catch if stopwords or punkt (and by extension punkt_tab) are missing
+        except LookupError: 
             st.info(f"NLTK resource '{resource_name}' not found, attempting download...")
             nltk.download(resource_name, quiet=True)
-        except Exception as e: # Catch any other download error
+        except Exception as e: 
             st.warning(f"Could not download or verify NLTK resource '{resource_name}': {e}")
             
     st.success("NLTK resources checked/downloaded.")
@@ -241,6 +238,7 @@ def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_
         status_text.empty()
     return data_df
 
+# CORRECTED: Removed experimental_allow_rerun=True
 @st.cache_resource 
 def load_bert_model_once(model_name="all-MiniLM-L6-v2"): 
     try:
@@ -315,85 +313,106 @@ def cluster_embeddings_with_progress(embeddings_to_cluster_param, n_clusters_for
         return None
 
 # --- Page Functions ---
-# (home_page, preprocessing_page, tsdae_page, fine_tuning_page, bert_model_page, clustering_page, upload_cv_page, job_recommendation_page, annotation_page, _calculate_average_precision, evaluation_page)
-# Ensure all these functions are fully defined as in the last complete version.
-# For brevity, only showing the structure and the main navigation.
-
 def home_page():
     st.header("Home: Exploratory Data Analysis") 
     st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
+
     if st.session_state.get('data') is None:
         st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE, JOB_DETAIL_FEATURES)
+    
     data_df = st.session_state.get('data')
+
     if data_df is not None:
         st.subheader('Data Preview (including `combined_jobs`)') 
         cols_to_preview = ['Job.ID']
         if 'Title' in data_df.columns: cols_to_preview.append('Title')
         if 'combined_jobs' in data_df.columns: cols_to_preview.append('combined_jobs')
         st.dataframe(data_df[cols_to_preview].head(), use_container_width=True)
+
         st.subheader('Data Summary') 
         st.write(f'Number of rows: {len(data_df)}') 
         st.write(f'Number of columns: {len(data_df.columns)}') 
+        
         if 'combined_jobs' in data_df.columns:
             st.subheader('Sample Content of `combined_jobs` Column') 
             for i in range(min(3, len(data_df))):
                 title_display = data_df.iloc[i]['Title'] if 'Title' in data_df.columns else "N/A"
                 with st.expander(f"Job.ID: {data_df.iloc[i]['Job.ID']} - {title_display}"):
                     st.text(data_df.iloc[i]['combined_jobs'])
+        else:
+            st.warning("Column 'combined_jobs' has not been created or is not in the data.") 
+
         st.subheader('Search Word in Feature') 
         search_word = st.text_input("Enter word to search:", key="home_search_word_new_v2") 
         all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES
         searchable_cols = sorted(list(set(col for col in all_available_cols_for_search if col in data_df.columns)))
         search_column = st.selectbox("Select feature to search in:", [''] + searchable_cols, key="home_search_column_new_v2") 
+
         if search_word and search_column:
             if search_column in data_df.columns:
                 search_results = data_df[data_df[search_column].astype(str).str.contains(search_word, case=False, na=False)]
                 display_search_cols = ['Job.ID']
                 if 'Title' in data_df.columns: display_search_cols.append('Title')
                 if search_column not in display_search_cols: display_search_cols.append(search_column)
+
                 if not search_results.empty:
                     st.write(f"Found {len(search_results)} entries for '{search_word}' in '{search_column}':") 
                     st.dataframe(search_results[display_search_cols].head(), use_container_width=True) 
-                else: st.info(f"No entries found for '{search_word}' in '{search_column}'.") 
+                else:
+                    st.info(f"No entries found for '{search_word}' in '{search_column}'.") 
+        
         st.subheader('Feature Information') 
         st.write('**Available Features (after processing):**', data_df.columns.tolist()) 
-    else: st.error("Data could not be loaded.") 
+    else:
+        st.error("Data could not be loaded. Please check the data source or your connection.") 
     return
 
 def preprocessing_page():
     st.header("Job Data Preprocessing") 
     st.write("This page performs preprocessing on the 'combined_jobs' column of the job dataset.") 
+
     if st.session_state.get('data') is None or 'combined_jobs' not in st.session_state.get('data', pd.DataFrame()).columns:
         st.warning("Job data or 'combined_jobs' column not available. Please return to the 'Home' page to load data first.") 
-        return
+        return # Removed button to go to home as user can use sidebar
+    
     data_df_to_preprocess = st.session_state['data']
+
     st.info("The 'combined_jobs' column will be processed to create the 'processed_text' column.") 
     if 'combined_jobs' in data_df_to_preprocess.columns:
         with st.expander("View 'combined_jobs' sample (before processing)"): 
             st.dataframe(data_df_to_preprocess[['Job.ID', 'combined_jobs']].head())
+
     if st.button("Run Preprocessing on 'combined_jobs' Column", key="run_job_col_prep_btn_v2"): 
         with st.spinner("Preprocessing 'combined_jobs'..."): 
             data_copy = data_df_to_preprocess.copy()
             st.session_state['data'] = preprocess_text_with_intermediate(data_copy, text_column_to_process='combined_jobs')
         st.success("Preprocessing of 'combined_jobs' column complete! 'processed_text' column has been created/updated.") 
+    
     if 'processed_text' in st.session_state.get('data', pd.DataFrame()).columns:
         st.info("Preprocessing has been performed on 'combined_jobs'.") 
         display_data_processed = st.session_state['data'] 
+        
         if 'preprocessing_steps' in display_data_processed.columns:
             st.subheader("Preprocessing Results (Intermediate Steps from last run)") 
             valid_intermediate_steps = [s for s in display_data_processed['preprocessing_steps'] if isinstance(s, dict)] 
-            if valid_intermediate_steps: st.dataframe(pd.DataFrame(valid_intermediate_steps).head(), use_container_width=True)
-            else: st.warning("Intermediate preprocessing steps data is not in the expected format or is empty.") 
+            if valid_intermediate_steps:
+                st.dataframe(pd.DataFrame(valid_intermediate_steps).head(), use_container_width=True)
+            else:
+                st.warning("Intermediate preprocessing steps data is not in the expected format or is empty.") 
+        
         st.subheader("Final Preprocessed Text ('processed_text') (Preview)") 
         st.dataframe(display_data_processed[['Job.ID', 'combined_jobs', 'processed_text']].head(), use_container_width=True)
+        
         search_word_in_processed = st.text_input("Search word in 'processed_text':", key="prep_job_proc_search_v2") 
         if search_word_in_processed:
             search_results_in_processed = display_data_processed[display_data_processed['processed_text'].astype(str).str.contains(search_word_in_processed, na=False, case=False)] 
             if not search_results_in_processed.empty:
                 display_cols_search_proc = ['Job.ID', 'Title' if 'Title' in display_data_processed.columns else 'Job.ID', 'processed_text']
                 st.dataframe(search_results_in_processed[display_cols_search_proc].head(), use_container_width=True)
-            else: st.info(f"No results for '{search_word_in_processed}' in 'processed_text'.") 
-    else: st.info("Column 'combined_jobs' is available, but preprocessing has not been run yet. Click the button above.") 
+            else:
+                st.info(f"No results for '{search_word_in_processed}' in 'processed_text'.") 
+    else:
+        st.info("Column 'combined_jobs' is available, but preprocessing has not been run yet. Click the button above.") 
     return
 
 def tsdae_page(): 
