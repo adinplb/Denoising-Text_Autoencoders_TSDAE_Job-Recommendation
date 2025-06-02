@@ -226,7 +226,8 @@ def preprocess_text_with_intermediate(data_df, text_column_to_process='combined_
         status_text.empty()
     return data_df
 
-@st.cache_resource(experimental_allow_್ರೀರುನ್=True) 
+# CORRECTED DECORATOR
+@st.cache_resource(experimental_allow_rerun=True) 
 def load_bert_model_once(model_name="all-MiniLM-L6-v2"):
     try:
         model = SentenceTransformer(model_name)
@@ -439,7 +440,7 @@ def tsdae_page():
             try:
                 tsdae_train_examples = []
                 for sentence in job_texts_for_tsdae:
-                    noisy_sentence = denoise_text(sentence, method='a', del_ratio=tsdae_del_ratio) # Ensure denoise_text returns a string
+                    noisy_sentence = denoise_text(sentence, method='a', del_ratio=tsdae_del_ratio) 
                     if noisy_sentence: 
                         tsdae_train_examples.append(InputExample(texts=[noisy_sentence, sentence]))
                 
@@ -711,8 +712,6 @@ def clustering_page():
     else: st.info("No cluster information to visualize. Run clustering first.")
     return
 
-# ... (upload_cv_page, job_recommendation_page, annotation_page, _calculate_average_precision, evaluation_page as before)
-# Ensure they use st.session_state.bert_model_instance for consistency.
 def upload_cv_page():
     st.header("Upload & Process CV(s)")
     st.write("Upload CVs (PDF/DOCX, max 5).")
@@ -767,7 +766,6 @@ def job_recommendation_page():
     if main_data is None or 'processed_text' not in main_data.columns:
         st.error("Job data with 'processed_text' not available. Load & preprocess first."); return
     
-    # Job embeddings for recommendation are always from the current main model's 'job_text_embeddings'
     job_emb_for_rec = st.session_state.get('job_text_embeddings')
     job_emb_ids_for_rec = st.session_state.get('job_text_embedding_job_ids')
     
@@ -873,7 +871,6 @@ def annotation_page():
     st.sidebar.markdown("---")
 
     st.subheader("🧑‍💻 Annotator Profile & Current Slot")
-    # ... (rest of annotation_page logic as in previous complete version) ...
     if ANNOTATORS:
         selected_slot = st.selectbox(
             "Select Your Annotator Slot to Enter/Edit Details and Annotations:",
@@ -1010,7 +1007,6 @@ def annotation_page():
 
     st.markdown("---")
     st.subheader("Final Actions")
-    # ... (Final Actions logic as before) ...
     completed_count = len(st.session_state.get('annotators_saved_status', set()))
     total_ann = len(ANNOTATORS) if ANNOTATORS else 0
     if total_ann > 0 and completed_count == total_ann:
@@ -1043,7 +1039,7 @@ def evaluation_page():
     st.write("Evaluates top 20 recommendations based on human annotations from the 'Annotation' page.")
     
     all_recommendations = st.session_state.get('all_recommendations_for_annotation', {})
-    anns_df = st.session_state.get('collected_annotations', pd.DataFrame()) # Now always uses this
+    anns_df = st.session_state.get('collected_annotations', pd.DataFrame()) 
     
     if not all_recommendations: 
         st.warning("No recommendations available to evaluate. Run 'Job Recommendation' first."); return
@@ -1134,7 +1130,10 @@ def evaluation_page():
                     avg_row_display[col] = f"{avg_metrics_dict[col]:.4f}" if pd.notna(avg_metrics_dict[col]) else "N/A"
                 
                 avg_row_df_display = pd.DataFrame([avg_row_display])
-                per_cv_df_display_with_avg = pd.concat([per_cv_df_display.set_index('CV Filename'), avg_row_df_display.set_index('CV Filename')])
+                # Set index before concat to ensure proper alignment if CV Filenames are not unique (though they should be)
+                per_cv_df_display_indexed = per_cv_df_display.set_index('CV Filename')
+                avg_row_df_display_indexed = avg_row_df_display.set_index('CV Filename')
+                per_cv_df_display_with_avg = pd.concat([per_cv_df_display_indexed, avg_row_df_display_indexed])
                 st.dataframe(per_cv_df_display_with_avg)
             else:
                 st.info("No CVs were evaluated (perhaps no recommendations or no matching annotations).")
