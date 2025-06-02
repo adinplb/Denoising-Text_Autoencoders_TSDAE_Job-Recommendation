@@ -17,5 +17,5 @@ plotly
 umap-learn
 kaggle
 kagglehub
-
+accelerate>=0.26.0
 
