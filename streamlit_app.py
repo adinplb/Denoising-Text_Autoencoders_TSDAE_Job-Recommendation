@@ -100,7 +100,7 @@ default_values = {
         "cv_job_finetuned_this_session": False
     },
     'bert_model_instance': None,
-    'sbert_classified_jobs_df': None # To store uploaded sbert_classified_jobs.csv
+    'sbert_classified_jobs_df': None 
 }
 for key, value in default_values.items():
     if key not in st.session_state:
@@ -303,7 +303,6 @@ def generate_embeddings_with_progress(_model_ref_for_cache_key, texts_list_to_em
 
 @st.cache_data
 def cluster_embeddings_with_progress(embeddings_to_cluster_param, n_clusters_for_algo): 
-    # ... (same as before)
     if embeddings_to_cluster_param is None or embeddings_to_cluster_param.size == 0:
         st.warning("No embeddings provided for clustering.")
         return None
@@ -331,46 +330,53 @@ def cluster_embeddings_with_progress(embeddings_to_cluster_param, n_clusters_for
         return None
 
 # --- Page Functions ---
-# ... (home_page, preprocessing_page, tsdae_page, fine_tuning_page (CV-Job), bert_model_page, etc. as before)
-# The following are placeholders and should be replaced with the full function definitions from previous versions,
-# adapted for any changes in session_state or model handling.
-
 def home_page():
     st.header("Home: Exploratory Data Analysis") 
     st.write("This page provides an overview of the job dataset and allows you to explore its features.") 
+
     if st.session_state.get('data') is None:
         st.session_state['data'] = load_and_combine_data_from_url(DATA_URL, FEATURES_TO_COMBINE, JOB_DETAIL_FEATURES)
+    
     data_df = st.session_state.get('data')
+
     if data_df is not None:
         st.subheader('Data Preview (including `combined_jobs`)') 
         cols_to_preview = ['Job.ID']
         if 'Title' in data_df.columns: cols_to_preview.append('Title')
         if 'combined_jobs' in data_df.columns: cols_to_preview.append('combined_jobs')
         st.dataframe(data_df[cols_to_preview].head(), use_container_width=True)
+
         st.subheader('Data Summary') 
         st.write(f'Number of rows: {len(data_df)}') 
         st.write(f'Number of columns: {len(data_df.columns)}') 
+        
         if 'combined_jobs' in data_df.columns:
             st.subheader('Sample Content of `combined_jobs` Column') 
             for i in range(min(3, len(data_df))):
                 title_display = data_df.iloc[i]['Title'] if 'Title' in data_df.columns else "N/A"
                 with st.expander(f"Job.ID: {data_df.iloc[i]['Job.ID']} - {title_display}"):
                     st.text(data_df.iloc[i]['combined_jobs'])
+        else:
+            st.warning("Column 'combined_jobs' has not been created or is not in the data.") 
+
         st.subheader('Search Word in Feature') 
         search_word = st.text_input("Enter word to search:", key="home_search_word_new_v2") 
         all_available_cols_for_search = ['Job.ID', 'Title', 'combined_jobs'] + FEATURES_TO_COMBINE + JOB_DETAIL_FEATURES
         searchable_cols = sorted(list(set(col for col in all_available_cols_for_search if col in data_df.columns)))
         search_column = st.selectbox("Select feature to search in:", [''] + searchable_cols, key="home_search_column_new_v2") 
+
         if search_word and search_column:
             if search_column in data_df.columns:
                 search_results = data_df[data_df[search_column].astype(str).str.contains(search_word, case=False, na=False)]
                 display_search_cols = ['Job.ID']
                 if 'Title' in data_df.columns: display_search_cols.append('Title')
                 if search_column not in display_search_cols: display_search_cols.append(search_column)
+
                 if not search_results.empty:
                     st.write(f"Found {len(search_results)} entries for '{search_word}' in '{search_column}':") 
                     st.dataframe(search_results[display_search_cols].head(), use_container_width=True) 
                 else: st.info(f"No entries found for '{search_word}' in '{search_column}'.") 
+        
         st.subheader('Feature Information') 
         st.write('**Available Features (after processing):**', data_df.columns.tolist()) 
     else: st.error("Data could not be loaded.") 
@@ -413,12 +419,11 @@ def preprocessing_page():
     return
 
 def tsdae_page(): 
-    st.header("TSDAE Fine-tuning on Job Descriptions")
+    st.header("TSDAE Pre-training on Job Descriptions") # Renamed
     st.write("""
-    This page fine-tunes the main BERT model using the Transformer Denoising Autoencoder (TSDAE) 
+    This page pre-trains (domain-adapts) the main BERT model using the Transformer Denoising Autoencoder (TSDAE) 
     objective on the 'processed_text' of job descriptions. 
     This modifies the main BERT model instance for subsequent use in this session.
-    The `denoise_text` function (method 'a' - random deletion) will be used to create noisy inputs for TSDAE.
     """)
 
     bert_model = st.session_state.bert_model_instance 
@@ -432,30 +437,20 @@ def tsdae_page():
     job_texts_for_tsdae = [text for text in job_texts_for_tsdae if text.strip()] 
 
     if not job_texts_for_tsdae:
-        st.warning("No valid 'processed_text' entries found in job data for TSDAE fine-tuning."); return
+        st.warning("No valid 'processed_text' entries found in job data for TSDAE pre-training."); return
 
-    st.info(f"Found {len(job_texts_for_tsdae)} job descriptions for TSDAE fine-tuning.")
+    st.info(f"Found {len(job_texts_for_tsdae)} job descriptions for TSDAE pre-training.")
 
-    tsdae_batch_size = st.selectbox("Batch size for TSDAE fine-tuning:", options=[4, 8, 16, 32], index=2, key="tsdae_batch_size_main_v3")
-    tsdae_epochs = st.number_input("Number of epochs for TSDAE fine-tuning:", min_value=1, max_value=5, value=1, key="tsdae_epochs_main_v3")
-    tsdae_del_ratio = st.slider("Deletion Ratio for TSDAE input noise:", 0.1, 0.9, 0.6, 0.1, key="tsdae_del_ratio_ft")
+    tsdae_batch_size = st.selectbox("Batch size for TSDAE pre-training:", options=[4, 8, 16, 32], index=2, key="tsdae_batch_size_pretrain")
+    tsdae_epochs = st.number_input("Number of epochs for TSDAE pre-training:", min_value=1, max_value=5, value=1, key="tsdae_epochs_pretrain")
     
-    if st.button("Start TSDAE Fine-tuning on Main Model", key="start_tsdae_finetuning_main_v3"):
-        with st.spinner(f"Fine-tuning model with TSDAE for {tsdae_epochs} epoch(s)... This may take some time."):
+    if st.button("Start TSDAE Pre-training on Main Model", key="start_tsdae_pretraining_main"):
+        with st.spinner(f"Pre-training model with TSDAE for {tsdae_epochs} epoch(s)... This may take some time."):
             try:
-                tsdae_train_examples = []
-                for sentence in job_texts_for_tsdae:
-                    noisy_sentence = denoise_text(sentence, method='a', del_ratio=tsdae_del_ratio) 
-                    if noisy_sentence and noisy_sentence != sentence: 
-                        tsdae_train_examples.append(InputExample(texts=[noisy_sentence, sentence]))
-                    elif noisy_sentence == sentence: 
-                        tsdae_train_examples.append(InputExample(texts=[sentence, sentence])) 
+                # DenoisingAutoEncoderDataset handles noise creation internally based on the model's tokenizer
+                train_dataset_tsdae = DenoisingAutoEncoderDataset(job_texts_for_tsdae)
+                train_dataloader_tsdae = DataLoader(train_dataset_tsdae, batch_size=tsdae_batch_size, shuffle=True)
                 
-                if not tsdae_train_examples:
-                    st.error("Could not create any valid (noisy, original) sentence pairs for TSDAE. Check data and deletion ratio.")
-                    return
-
-                train_dataloader_tsdae = DataLoader(tsdae_train_examples, batch_size=tsdae_batch_size, shuffle=True)
                 train_loss_tsdae = losses.DenoisingAutoEncoderLoss(
                     bert_model, 
                     decoder_name_or_path=bert_model.tokenizer.name_or_path, 
@@ -469,25 +464,25 @@ def tsdae_page():
                     output_path=None, show_progress_bar=True,
                 )
                 st.session_state.model_trained_flags["tsdae_trained_this_session"] = True
+                # Invalidate job_text_embeddings as the model has changed
                 if 'job_text_embeddings' in st.session_state: del st.session_state['job_text_embeddings']
                 if 'job_text_embedding_job_ids' in st.session_state: del st.session_state['job_text_embedding_job_ids']
-                st.success("TSDAE fine-tuning complete! The main BERT model instance has been updated.")
-                st.info("You may now want to re-generate 'Standard BERT Embeddings' on the 'BERT Model & Embeddings' page.")
+                st.success("TSDAE pre-training complete! The main BERT model instance has been updated.")
+                st.info("You may now proceed to 'SBERT O*NET Fine-tuning' or other fine-tuning/embedding generation steps.")
             except Exception as e:
-                st.error(f"Error during TSDAE fine-tuning: {e}")
+                st.error(f"Error during TSDAE pre-training: {e}")
                 st.exception(e)
 
     if st.session_state.model_trained_flags.get("tsdae_trained_this_session", False):
-        st.success("The main BERT model has been fine-tuned with TSDAE in this session.")
+        st.success("The main BERT model has been pre-trained with TSDAE in this session.")
     return
 
 def sbert_onet_finetuning_page():
-    st.header("SBERT Fine-tuning (O*NET Classification Task)")
+    st.header("SBERT Fine-tuning (Job Text to O*NET Alignment)")
     st.write("""
-    This page fine-tunes the current BERT model to better align job titles/descriptions 
-    from your dataset with standard O*NET occupation titles and descriptions.
-    This uses `MultipleNegativesRankingLoss`.
-    **Prerequisite**: Your main job data should have a 'category' column from your SBERT classification script.
+    This page fine-tunes the current BERT model (potentially after TSDAE pre-training) 
+    to better align job descriptions from your dataset with standard O*NET occupation descriptions.
+    It uses the 'category' (O*NET Title) from your uploaded `sbert_classified_jobs.csv` to create training pairs.
     """)
 
     bert_model_to_ft = st.session_state.bert_model_instance
@@ -511,12 +506,12 @@ def sbert_onet_finetuning_page():
     if not all(col in onet_df.columns for col in expected_onet_cols):
         st.error(f"O*NET data is missing required columns: {', '.join(expected_onet_cols)}"); return
 
-    # Preprocess O*NET data
+    # Preprocess O*NET data if not already done
     if 'processed_onet_text' not in onet_df.columns:
         with st.spinner("Preprocessing O*NET data for fine-tuning..."):
             onet_df['onet_combined_text'] = onet_df['Title'].fillna('').astype(str) + " " + onet_df['Description'].fillna('').astype(str)
             onet_df['processed_onet_text'] = onet_df['onet_combined_text'].apply(preprocess_text)
-            st.session_state.onet_data = onet_df # Save back to session state
+            st.session_state.onet_data = onet_df 
     
     valid_onet_entries = onet_df[onet_df['processed_onet_text'].str.strip() != ''].copy()
     if valid_onet_entries.empty:
@@ -524,62 +519,62 @@ def sbert_onet_finetuning_page():
     
     st.info(f"Using {len(valid_onet_entries)} O*NET entries for matching.")
 
-    # File uploader for the sbert_classified_jobs.csv
-    st.subheader("Upload SBERT Classified Job Data")
-    st.info("Please upload the CSV file that contains your job postings already classified with an O*NET 'category' (O*NET Title). This file should at least contain 'Job.ID' and 'category' columns.")
-    uploaded_sbert_classified_file = st.file_uploader("Upload sbert_classified_jobs.csv", type="csv", key="sbert_classified_uploader")
+    st.subheader("Upload Your Pre-classified Job Data (CSV)")
+    st.markdown("This CSV should contain `Job.ID` and `category` columns, where `category` is the O\*NET Title your jobs were matched to.")
+    uploaded_sbert_classified_file = st.file_uploader("Upload `sbert_classified_jobs.csv`", type="csv", key="sbert_classified_jobs_uploader")
 
     if uploaded_sbert_classified_file is not None:
         try:
-            sbert_classified_df = pd.read_csv(uploaded_sbert_classified_file)
-            sbert_classified_df['Job.ID'] = sbert_classified_df['Job.ID'].astype(str) # Ensure Job.ID is string
-            st.session_state.sbert_classified_jobs_df = sbert_classified_df
-            st.success(f"Uploaded '{uploaded_sbert_classified_file.name}' successfully.")
-            st.dataframe(sbert_classified_df.head())
+            sbert_classified_df_uploaded = pd.read_csv(uploaded_sbert_classified_file)
+            sbert_classified_df_uploaded['Job.ID'] = sbert_classified_df_uploaded['Job.ID'].astype(str) 
+            if not all(col in sbert_classified_df_uploaded.columns for col in ['Job.ID', 'category']):
+                st.error("Uploaded CSV must contain 'Job.ID' and 'category' columns.")
+                st.session_state.sbert_classified_jobs_df = None
+            else:
+                st.session_state.sbert_classified_jobs_df = sbert_classified_df_uploaded
+                st.success(f"Uploaded '{uploaded_sbert_classified_file.name}' successfully.")
+                st.dataframe(sbert_classified_df_uploaded.head())
         except Exception as e:
             st.error(f"Error reading or processing uploaded SBERT classified CSV: {e}")
             st.session_state.sbert_classified_jobs_df = None
-
-
+    
     if st.session_state.sbert_classified_jobs_df is not None:
         sbert_classified_df = st.session_state.sbert_classified_jobs_df
-        if not all(col in sbert_classified_df.columns for col in ['Job.ID', 'category']):
-            st.error("Uploaded SBERT classified CSV must contain 'Job.ID' and 'category' columns."); return
+        
+        sbert_onet_epochs_ft = st.number_input("Epochs for SBERT O*NET fine-tuning:", min_value=1, max_value=10, value=1, key="sbert_onet_epochs_ft_v4")
+        sbert_onet_batch_size_ft = st.selectbox("Batch size for SBERT O*NET fine-tuning:", options=[4, 8, 16, 32], index=2, key="sbert_onet_batch_size_ft_v4")
 
-        sbert_onet_epochs_ft = st.number_input("Epochs for SBERT O*NET fine-tuning:", min_value=1, max_value=10, value=1, key="sbert_onet_epochs_ft_v3")
-        sbert_onet_batch_size_ft = st.selectbox("Batch size for SBERT O*NET fine-tuning:", options=[4, 8, 16, 32], index=2, key="sbert_onet_batch_size_ft_v3")
-
-        if st.button("Start SBERT O*NET Fine-tuning", key="start_sbert_onet_ft_btn_v3"):
+        if st.button("Start SBERT O*NET Fine-tuning", key="start_sbert_onet_ft_btn_v4"):
             with st.spinner("Preparing training data and fine-tuning with SBERT O*NET... This may take a while."):
                 try:
                     train_examples_sbert_onet = []
-                    # Map O*NET titles to their processed text for quick lookup
                     onet_title_to_processed_text = pd.Series(valid_onet_entries.processed_onet_text.values, index=valid_onet_entries.Title).to_dict()
+                    
+                    # Ensure main_job_data has 'processed_text'
+                    if 'processed_text' not in main_job_data.columns:
+                        st.error("'processed_text' column missing from main job data. Please run preprocessing.")
+                        return
 
-                    # Merge sbert_classified_df with main_job_data to get 'processed_text' for jobs
                     merged_for_ft = pd.merge(sbert_classified_df[['Job.ID', 'category']], 
                                              main_job_data[['Job.ID', 'processed_text']], 
                                              on='Job.ID', 
                                              how='inner')
                     
                     if merged_for_ft.empty:
-                        st.error("No matching Job.IDs found between uploaded classified data and main job data. Cannot create training pairs.")
-                        return
+                        st.error("No matching Job.IDs found between uploaded classified data and main job data."); return
 
                     for _, row in merged_for_ft.iterrows():
                         job_proc_text = row['processed_text']
-                        onet_category_title = row['category'] # This is the O*NET Title from your CSV
-                        
-                        # Find the corresponding processed O*NET text
+                        onet_category_title = row['category'] 
                         matched_onet_proc_text = onet_title_to_processed_text.get(onet_category_title)
                         
                         if job_proc_text and matched_onet_proc_text:
                             train_examples_sbert_onet.append(InputExample(texts=[job_proc_text, matched_onet_proc_text]))
                         else:
-                            st.warning(f"Skipping Job.ID {row['Job.ID']}: Missing processed text for job or its matched O*NET category '{onet_category_title}'.")
+                            st.warning(f"Skipping Job.ID {row['Job.ID']}: Missing text for job or O*NET category '{onet_category_title}'.")
                     
                     if not train_examples_sbert_onet:
-                        st.error("No training examples created. Check if 'category' values in your CSV match O*NET Titles and if texts are processed."); return
+                        st.error("No training examples created. Check CSV 'category' values and O*NET Titles."); return
 
                     st.write(f"Created {len(train_examples_sbert_onet)} (job_text, matched_onet_text) training pairs.")
                     
@@ -605,12 +600,9 @@ def sbert_onet_finetuning_page():
         
         if st.session_state.model_trained_flags.get("sbert_onet_finetuned_this_session", False):
             st.success("The main BERT model has been fine-tuned with SBERT O*NET data in this session.")
-    elif uploaded_annotations_file is not None and st.session_state.sbert_classified_jobs_df is None:
-        st.info("Click 'Load Annotations from CSV' above to process the uploaded file for fine-tuning.")
-    else:
+    elif uploaded_annotations_file is None: # Corrected variable name
         st.info("Please upload your 'sbert_classified_jobs.csv' file to enable SBERT O*NET fine-tuning.")
     return
-
 
 def fine_tuning_page(): 
     st.header("Model Fine-tuning (CV-Job Matching)")
